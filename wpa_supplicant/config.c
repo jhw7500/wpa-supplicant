@@ -4416,6 +4416,7 @@ struct wpa_config * wpa_config_alloc_empty(const char *ctrl_interface,
 	config->cert_in_cb = DEFAULT_CERT_IN_CB;
 	config->wpa_rsc_relaxation = DEFAULT_WPA_RSC_RELAXATION;
 	config->extended_key_id = DEFAULT_EXTENDED_KEY_ID;
+	config->connect_threshold = DEFAULT_CONNECT_THRESHOLD;	//jhw
 
 #ifdef CONFIG_MBO
 	config->mbo_cell_capa = DEFAULT_MBO_CELL_CAPA;
@@ -5264,6 +5265,7 @@ static const struct global_parse_data global_fields[] = {
 	{ INT_RANGE(pasn_corrupt_mic, 0, 1), 0 },
 #endif /* CONFIG_TESTING_OPTIONS */
 #endif /* CONFIG_PASN */
+	{ INT_RANGE(connect_threshold, -100, 0), 0 },	//jhw
 };
 
 #undef FUNC

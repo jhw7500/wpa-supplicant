@@ -198,10 +198,10 @@ CONFIG_SMARTCARD=y
 #CONFIG_PCSC=y
 
 # Support HT overrides (disable HT/HT40, mask MCS rates, etc.)
-#CONFIG_HT_OVERRIDES=y
+CONFIG_HT_OVERRIDES=y
 
 # Support VHT overrides (disable VHT, mask MCS rates, etc.)
-#CONFIG_VHT_OVERRIDES=y
+CONFIG_VHT_OVERRIDES=y
 
 # Development testing
 #CONFIG_EAPOL_TEST=y
@@ -633,3 +633,49 @@ CONFIG_DPP2=y
 # design is still subject to change. As such, this should not yet be enabled in
 # production use.
 #CONFIG_PASN=y
+
+##################################
+# BEGIN NXP CUSTOMIZATION
+##################################
+
+CONFIG_SUITEB=y
+CONFIG_SUITEB192=y
+# IEEE 802.11w (management frame protection), also known as PMF
+# Driver support is also needed for IEEE 802.11w.
+CONFIG_IEEE80211W=y
+# IEEE 802.11n (High Throughput) support (mainly for AP mode)
+CONFIG_IEEE80211N=y
+# Wireless Network Management (IEEE Std 802.11v-2011)
+# Note: This is experimental and not complete implementation.
+CONFIG_WNM=y
+# Support Multi Band Operation
+CONFIG_MBO=y
+# Opportunistic Wireless Encryption (OWE)
+# Experimental implementation of draft-harkins-owe-07.txt
+CONFIG_OWE=y
+# Disable roaming in wpa_supplicant
+CONFIG_NO_ROAMING=y
+CONFIG_TESTING_OPTIONS=y
+# Enable SIM simulator (Milenage) for EAP-SIM
+CONFIG_SIM_SIMULATOR=y
+# EAP-PSK (experimental; this is _not_ needed for WPA-PSK)
+CONFIG_EAP_PSK=y
+# Enable WPS external registrar functionality
+CONFIG_WPS_ER=y
+# Include support for GNU Readline and History Libraries in wpa_cli.
+# When building a wpa_cli binary for distribution, please note that these
+# libraries are licensed under GPL and as such, BSD license may not apply for
+# the resulting binary.
+CONFIG_READLINE=y
+
+# External PMKSA cache control
+# This can be used to enable control interface commands that allow the current
+# PMKSA cache entries to be fetched and new entries to be added.
+CONFIG_PMKSA_CACHE_EXTERNAL=y
+
+# Support Operating Channel Validation
+CONFIG_OCV=y
+
+CONFIG_HT_OVERRIDES=y
+CONFIG_VHT_OVERRIDES=y
+CONFIG_IEEE80211AX=y
