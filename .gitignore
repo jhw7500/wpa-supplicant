@@ -1,0 +1,8 @@
+
+# Tool/IDE directories
+.serena/
+.vscode/
+build/
+.bkit/
+.omc/
+.context/
