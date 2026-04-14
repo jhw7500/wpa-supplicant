@@ -287,8 +287,6 @@ static int wpa_config_read_global(struct wpa_config *config, HKEY hk)
 		config->extended_key_id = val;
 	}
 
-	wpa_config_read_reg_dword(hk, TEXT("connect_threshold"), &config->connect_threshold);	//jhw
-
 	return errors ? -1 : 0;
 }
 

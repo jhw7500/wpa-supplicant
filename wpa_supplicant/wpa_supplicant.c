@@ -6583,6 +6583,8 @@ static int wpa_supplicant_init_iface(struct wpa_supplicant *wpa_s,
 			return -1;
 		}
 
+		wpa_config_read_json_init(wpa_s->conf, iface->ifname);	//jhw
+
 		/*
 		 * Override ctrl_interface and driver_param if set on command
 		 * line.

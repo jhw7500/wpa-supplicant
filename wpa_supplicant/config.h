@@ -47,7 +47,7 @@
 #define DEFAULT_OCE_SUPPORT OCE_STA
 #define DEFAULT_EXTENDED_KEY_ID 0
 #define DEFAULT_SCAN_RES_VALID_FOR_CONNECT 5
-#define DEFAULT_CONNECT_THRESHOLD	0		//jhw
+#define DEFAULT_CONNECT_THRESHOLD	-100		//jhw
 
 #include "config_ssid.h"
 #include "wps/wps.h"
@@ -1703,6 +1703,9 @@ struct wpa_config {
 
 	int connect_threshold;		//jhw
 };
+
+void wpa_config_read_json_init(struct wpa_config *config,	//jhw
+			       const char *ifname);
 
 
 /* Prototypes for common functions from config.c */

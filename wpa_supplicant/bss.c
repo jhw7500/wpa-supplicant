@@ -450,6 +450,7 @@ static struct wpa_bss * wpa_bss_add(struct wpa_supplicant *wpa_s,
 	{
 		wpa_msg(wpa_s, MSG_INFO, "BSS: freq %d bssid " MACSTR
 			" level %d < connect threshold %d", res->freq, MAC2STR(res->bssid), res->level, wpa_s->conf->connect_threshold);
+		os_free(bss);
 		return NULL;
 	}
 

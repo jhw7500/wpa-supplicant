@@ -13,3 +13,4 @@ wpa_gui-qt4/Makefile
 wpa_gui-qt4/wpa_gui
 libwpa_test1
 libwpa_test2
+.build_target

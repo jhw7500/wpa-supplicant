@@ -4342,6 +4342,63 @@ int wpa_config_remove_blob(struct wpa_config *config, const char *name)
 #endif /* CONFIG_NO_CONFIG_BLOBS */
 
 
+#define WIFI_INIT_CONF_JSON "/usr/local/etc/wifi_init_conf.json"	//jhw
+
+void wpa_config_read_json_init(struct wpa_config *config,	//jhw
+			       const char *ifname)
+{
+	FILE *f;
+	char buf[256];
+	char *pos;
+	int in_iface_section = 0;
+	int brace_depth = 0;
+
+	f = fopen(WIFI_INIT_CONF_JSON, "r");
+	if (!f) {
+		wpa_printf(MSG_DEBUG, "JSON: %s not found, using defaults",
+			   WIFI_INIT_CONF_JSON);
+		return;
+	}
+
+	while (fgets(buf, sizeof(buf), f)) {
+		if (!in_iface_section) {
+			/* Look for "mlan0": or "mlan1": section */
+			char key[64];
+			os_snprintf(key, sizeof(key), "\"%s\"", ifname);
+			if (os_strstr(buf, key) && os_strchr(buf, '{')) {
+				in_iface_section = 1;
+				brace_depth = 1;
+			}
+			continue;
+		}
+
+		/* Track brace depth inside interface section */
+		for (pos = buf; *pos; pos++) {
+			if (*pos == '{') brace_depth++;
+			else if (*pos == '}') brace_depth--;
+		}
+
+		if (brace_depth <= 0)
+			break;
+
+		pos = os_strstr(buf, "\"connect_threshold\"");
+		if (pos) {
+			pos = os_strchr(pos, ':');
+			if (pos) {
+				config->connect_threshold = atoi(pos + 1);
+				wpa_printf(MSG_INFO,
+					   "JSON: %s connect_threshold=%d",
+					   ifname,
+					   config->connect_threshold);
+			}
+			break;
+		}
+	}
+
+	fclose(f);
+}
+
+
 /**
  * wpa_config_alloc_empty - Allocate an empty configuration
  * @ctrl_interface: Control interface parameters, e.g., path to UNIX domain
@@ -5265,7 +5322,6 @@ static const struct global_parse_data global_fields[] = {
 	{ INT_RANGE(pasn_corrupt_mic, 0, 1), 0 },
 #endif /* CONFIG_TESTING_OPTIONS */
 #endif /* CONFIG_PASN */
-	{ INT_RANGE(connect_threshold, -100, 0), 0 },	//jhw
 };
 
 #undef FUNC
