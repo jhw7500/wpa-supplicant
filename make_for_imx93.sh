@@ -1,4 +1,5 @@
 #!/bin/bash
+BASEDIR="$(cd "$(dirname "$0")" && pwd)"
 TARGET=imx93
 [ "$SDK_LOC" ] || SDK_LOC=/shared/fsl-imx-wayland/6.6-nanbield
 [ "$SDK_NAME" ] || SDK_NAME=armv8a-poky-linux
@@ -43,4 +44,12 @@ if [ $? -eq 0 ]; then
     echo ""
     echo "Build successful (${TARGET}):"
     file wpa_supplicant wpa_cli wpa_passphrase 2>/dev/null
+
+    # Copy to wlan-package
+    PKG_BIN="${BASEDIR}/../wlan-package/dist/wlan/opt/wlan/bin"
+    if [ -d "$PKG_BIN" ]; then
+        cp wpa_supplicant "${PKG_BIN}/wpa_supplicant.${TARGET}"
+        cp wpa_cli "${PKG_BIN}/wpa_cli.${TARGET}"
+        echo "Copied to wlan-package: wpa_supplicant.${TARGET}, wpa_cli.${TARGET}"
+    fi
 fi
