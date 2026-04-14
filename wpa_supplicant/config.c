@@ -4396,6 +4396,10 @@ void wpa_config_read_json_init(struct wpa_config *config,	//jhw
 	}
 
 	fclose(f);
+
+	wpa_printf(MSG_INFO, "JSON: %s connect_threshold=%d (from %s)",
+		   ifname, config->connect_threshold,
+		   in_iface_section ? WIFI_INIT_CONF_JSON : "default");
 }
 
 
