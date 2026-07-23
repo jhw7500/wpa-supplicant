@@ -615,6 +615,30 @@ struct wpa_ssid {
 	char *bgscan;
 
 	/**
+	 * roam_threshold - Signal level threshold for aggressive roaming
+	 *
+	 * If set to a non-zero (negative dBm) value, wpa_supplicant allows
+	 * reassociation to any BSS in the same ESS that has a stronger signal
+	 * whenever the current BSS signal level is at or below this threshold.
+	 * This bypasses the built-in signal level difference heuristic so that a
+	 * weak connection roams to a better AP without requiring the normally
+	 * needed margin. A value of 0 (default) disables this behavior and keeps
+	 * the default roaming heuristic.
+	 */
+	int roam_threshold;
+
+	/**
+	 * roam_min_diff - Override for the minimum signal level difference
+	 *
+	 * If set to a non-zero value, this replaces the built-in per-signal-level
+	 * table that determines how much stronger (in dB) a candidate BSS must be
+	 * than the current BSS before roaming within the ESS is allowed. Estimated
+	 * throughput and band adjustments are still applied on top of this base
+	 * value. A value of 0 (default) uses the built-in heuristic.
+	 */
+	int roam_min_diff;
+
+	/**
 	 * ignore_broadcast_ssid - Hide SSID in AP mode
 	 *
 	 * Send empty SSID in beacons and ignore probe request frames that do

@@ -2559,6 +2559,8 @@ static const struct parse_data ssid_fields[] = {
 	{ INT_RANGE(wpa_deny_ptk0_rekey, 0, 2) },
 	{ INT(group_rekey) },
 	{ STR(bgscan) },
+	{ INT_RANGE(roam_threshold, -125, 0) },
+	{ INT_RANGE(roam_min_diff, 0, 100) },
 	{ INT_RANGE(ignore_broadcast_ssid, 0, 2) },
 #ifdef CONFIG_P2P
 	{ FUNC(go_p2p_dev_addr) },

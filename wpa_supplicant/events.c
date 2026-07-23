@@ -1933,6 +1933,16 @@ int wpa_supplicant_need_to_roam_within_ess(struct wpa_supplicant *wpa_s,
 		return 1;
 	}
 
+	if (wpa_s->current_ssid->roam_threshold && cur_level < 0 &&
+	    cur_level <= wpa_s->current_ssid->roam_threshold &&
+	    selected->level > cur_level) {
+		wpa_dbg(wpa_s, MSG_DEBUG,
+			"Allow reassociation - current signal level (%d) at or below roam_threshold (%d) and selected BSS is stronger (%d)",
+			cur_level, wpa_s->current_ssid->roam_threshold,
+			selected->level);
+		return 1;
+	}
+
 	to_5ghz = selected->freq > 4000 && current_bss->freq < 4000;
 
 	if (cur_level < 0 && cur_level > selected->level + to_5ghz * 2 &&
@@ -1967,6 +1977,13 @@ int wpa_supplicant_need_to_roam_within_ess(struct wpa_supplicant *wpa_s,
 		min_diff = 5;
 	else /* unspecified units (not in dBm) */
 		min_diff = 2;
+
+	if (wpa_s->current_ssid->roam_min_diff) {
+		wpa_dbg(wpa_s, MSG_DEBUG,
+			"Override min_diff with roam_min_diff (%d -> %d)",
+			min_diff, wpa_s->current_ssid->roam_min_diff);
+		min_diff = wpa_s->current_ssid->roam_min_diff;
+	}
 
 	if (cur_est > sel_est * 1.5)
 		min_diff += 10;
