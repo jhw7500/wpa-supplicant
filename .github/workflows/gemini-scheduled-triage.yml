@@ -1,0 +1,16 @@
+name: Gemini Scheduled Issue Triage
+
+on:
+  workflow_dispatch:
+
+jobs:
+  triage:
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    uses: jhw7500/automation/.github/workflows/gemini-scheduled-triage.yml@d3b102e2c1f62f6abf5a9a5a37da810e6ba3e7f5
+    with:
+      repo_write_auth: github_token
+    secrets:
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
