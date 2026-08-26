@@ -1,5 +1,5 @@
-automation_ref: v1.45.3
-automation_commit: 06183ff67c6052489ccac3b7cb37fd93aa3f6307
+automation_ref: v1.46.2
+automation_commit: 79e87569272b865642c1d1493740135b567717ac
 review:
   auto: false
 workflows:
