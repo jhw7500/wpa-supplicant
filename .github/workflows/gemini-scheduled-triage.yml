@@ -1,4 +1,4 @@
-name: '📋 Gemini Scheduled Issue Triage'
+name: Gemini Scheduled Issue Triage
 
 on:
   workflow_dispatch:
@@ -6,9 +6,11 @@ on:
 jobs:
   triage:
     permissions:
-      contents: 'read'
-      id-token: 'write'
-      issues: 'write'
-      pull-requests: 'write'
-    uses: jhw7500/automation/.github/workflows/gemini-scheduled-triage.yml@v1.33
-    secrets: inherit
+      contents: read
+      issues: write
+      pull-requests: write
+    uses: jhw7500/automation/.github/workflows/gemini-scheduled-triage.yml@49cd25b554a086e9f8684ee7c45171699ff824e1
+    with:
+      repo_write_auth: github_token
+    secrets:
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}

@@ -1,4 +1,5 @@
 name: Claude Code
+run-name: jhw-review-comment-${{ github.event.comment.id || github.run_id }}
 
 on:
   issue_comment:
@@ -10,11 +11,12 @@ on:
 
 jobs:
   claude:
-    uses: 'jhw7500/automation/.github/workflows/claude.yml@v1.33'
     permissions:
+      actions: read
       contents: read
-      pull-requests: read
-      issues: read
       id-token: write
-      actions: read # Required for Claude to read CI results on PRs
-    secrets: inherit
+      issues: read
+      pull-requests: read
+    uses: jhw7500/automation/.github/workflows/claude.yml@49cd25b554a086e9f8684ee7c45171699ff824e1
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}

@@ -2,17 +2,46 @@ name: Gemini Auto PR Review
 
 on:
   pull_request:
-    types: [opened, synchronize]
+    types: [opened, synchronize, ready_for_review]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Pull request number
+        type: number
+        required: true
+      force_review:
+        description: Perform one authorized same-HEAD review
+        type: boolean
+        required: false
+        default: false
 
 jobs:
   gemini-review:
-    if: ${{ github.event.pull_request.head.repo.fork == false }}
+    if: >-
+      (github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.fork == false &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.draft == false) ||
+      (github.event_name == 'workflow_dispatch' && inputs.force_review)
     permissions:
-      contents: 'read'
-      pull-requests: 'write'
-      issues: 'write'
-      id-token: 'write'
-    uses: 'jhw7500/automation/.github/workflows/gemini-auto-review.yml@v1.33'
+      actions: read
+      contents: read
+      issues: write
+      pull-requests: write
+    uses: jhw7500/automation/.github/workflows/gemini-auto-review.yml@49cd25b554a086e9f8684ee7c45171699ff824e1
     with:
-      pr_number: '${{ github.event.pull_request.number }}'
-    secrets: 'inherit'
+      pr_number: ${{ github.event.pull_request.number || inputs.pr_number }}
+      force_review: ${{ github.event_name == 'workflow_dispatch' && inputs.force_review }}
+      review_mode: >-
+        ${{
+          github.event_name == 'workflow_dispatch' && inputs.force_review && 'request' ||
+          contains(github.event.pull_request.labels.*.name, 'review:request') &&
+          contains(github.event.pull_request.labels.*.name, 'review:skip') && 'conflict' ||
+          contains(github.event.pull_request.labels.*.name, 'review:request') && 'request' ||
+          contains(github.event.pull_request.labels.*.name, 'review:skip') && 'skip' ||
+          'auto'
+        }}
+      repo_write_auth: github_token
+      publisher_app_id: ${{ vars.APP_ID }}
+    secrets:
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
