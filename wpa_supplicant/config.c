@@ -11,6 +11,10 @@
 #include "common.h"
 #include "utils/uuid.h"
 #include "utils/ip_addr.h"
+#include <limits.h>	/* jhw: strtol bounds in the connect_threshold paths */
+#ifdef CONFIG_JSON
+#include "utils/json.h"	/* jhw */
+#endif /* CONFIG_JSON */
 #include "common/ieee802_1x_defs.h"
 #include "common/sae.h"
 #include "crypto/sha1.h"
@@ -4871,21 +4875,91 @@ int wpa_config_remove_blob(struct wpa_config *config, const char *name)
 #endif /* CONFIG_NO_CONFIG_BLOBS */
 
 
+/* jhw: overridable so that the parsing paths below can be exercised against
+ * a fixture file without touching the deployed one. */
+#ifndef WIFI_INIT_CONF_JSON
 #define WIFI_INIT_CONF_JSON "/usr/local/etc/wifi_init_conf.json"	//jhw
+#endif /* WIFI_INIT_CONF_JSON */
+/* jhw: the init file is a small per-interface config; anything larger is not
+ * one, and reading it whole is the only unbounded allocation here. */
+#define WIFI_INIT_CONF_MAX_SIZE 65536
 
-void wpa_config_read_json_init(struct wpa_config *config,	//jhw
-			       const char *ifname)
+
+/* jhw: Range-check a connect_threshold read from the init file, then apply it.
+ * On rejection the value already in place - the one from wpa_supplicant.conf,
+ * or the built-in default - is kept. That is the permissive direction, so a
+ * bad edit cannot gate every AP. Returns 1 if the value was applied. */
+static int wpa_config_apply_connect_threshold(struct wpa_config *config,
+					      const char *ifname, int val)
+{
+	if (val < CONNECT_THRESHOLD_MIN || val > CONNECT_THRESHOLD_MAX) {
+		wpa_printf(MSG_ERROR,
+			   "JSON: %s connect_threshold=%d is outside %d..%d - ignored, keeping %d (RSSI is negative; a positive value would gate every BSS)",
+			   ifname, val, CONNECT_THRESHOLD_MIN,
+			   CONNECT_THRESHOLD_MAX, config->connect_threshold);
+		return 0;
+	}
+
+	if (val != 0 && val > CONNECT_THRESHOLD_LOOSE) {
+		wpa_printf(MSG_WARNING,
+			   "JSON: %s connect_threshold=%d is unusually high - most APs will not be selectable",
+			   ifname, val);
+	}
+
+	config->connect_threshold = val;
+	return 1;
+}
+
+
+/* jhw: Read an integer out of the raw tail of a config line. The value is
+ * followed by a comma, a brace or a quote, so unlike the JSON path this stops
+ * at the first character strtol() will not take - but it still refuses text
+ * that holds no number at all. atoi() would turn "off" into 0, and 0 is inside
+ * the accepted range, so the filter would switch off while the log read like a
+ * deliberate setting. */
+static int wpa_config_scan_int(const char *pos, int *out)
+{
+	char *endp;
+	long val;
+
+	while (*pos == ' ' || *pos == '\t' || *pos == '"')
+		pos++;
+
+	errno = 0;
+	val = strtol(pos, &endp, 10);
+	if (errno || endp == pos || val < INT_MIN || val > INT_MAX)
+		return 0;
+
+	*out = (int) val;
+	return 1;
+}
+
+
+/* jhw: Legacy line scanner, kept only as a fallback for files the strict
+ * parser rejects - comments, trailing commas, or a file past the parser's
+ * token and depth limits. It is not a JSON parser: it matches per line, so a
+ * key inside a string value, or a section header split across lines, can fool
+ * it. Measured limitation: when a section opens and closes on one line, that
+ * line is skipped, and the value picked up is the next section's - so it can
+ * report a neighbouring interface's threshold as this one's. The log says
+ * which of the three outcomes happened and that this path was used, so that
+ * "section found" is no longer reported as "value applied". */
+static void wpa_config_read_json_init_scan(struct wpa_config *config,
+					   const char *ifname)
 {
 	FILE *f;
 	char buf[256];
 	char *pos;
 	int in_iface_section = 0;
 	int brace_depth = 0;
+	int applied = 0;
+	int val;
 
 	f = fopen(WIFI_INIT_CONF_JSON, "r");
 	if (!f) {
-		wpa_printf(MSG_DEBUG, "JSON: %s not found, using defaults",
-			   WIFI_INIT_CONF_JSON);
+		wpa_printf(MSG_DEBUG,
+			   "JSON: %s not found, keeping connect_threshold=%d",
+			   WIFI_INIT_CONF_JSON, config->connect_threshold);
 		return;
 	}
 
@@ -4913,12 +4987,9 @@ void wpa_config_read_json_init(struct wpa_config *config,	//jhw
 		pos = os_strstr(buf, "\"connect_threshold\"");
 		if (pos) {
 			pos = os_strchr(pos, ':');
-			if (pos) {
-				config->connect_threshold = atoi(pos + 1);
-				wpa_printf(MSG_INFO,
-					   "JSON: %s connect_threshold=%d",
-					   ifname,
-					   config->connect_threshold);
+			if (pos && wpa_config_scan_int(pos + 1, &val)) {
+				applied = wpa_config_apply_connect_threshold(
+					config, ifname, val);
 			}
 			break;
 		}
@@ -4926,9 +4997,349 @@ void wpa_config_read_json_init(struct wpa_config *config,	//jhw
 
 	fclose(f);
 
-	wpa_printf(MSG_INFO, "JSON: %s connect_threshold=%d (from %s)",
-		   ifname, config->connect_threshold,
-		   in_iface_section ? WIFI_INIT_CONF_JSON : "default");
+	if (!in_iface_section)
+		wpa_printf(MSG_INFO,
+			   "JSON: line scanner found no \"%s\" section in %s - keeping connect_threshold=%d",
+			   ifname, WIFI_INIT_CONF_JSON,
+			   config->connect_threshold);
+	else if (!applied)
+		wpa_printf(MSG_INFO,
+			   "JSON: line scanner found section \"%s\" in %s but applied no connect_threshold - keeping %d",
+			   ifname, WIFI_INIT_CONF_JSON,
+			   config->connect_threshold);
+	else
+		wpa_printf(MSG_WARNING,
+			   "JSON: %s connect_threshold=%d (from %s via the line scanner - the file is not valid JSON, and this path can pick up a neighbouring section's value; fix the file to have it parsed properly)",
+			   ifname, config->connect_threshold,
+			   WIFI_INIT_CONF_JSON);
+}
+
+
+#ifdef CONFIG_JSON
+
+/* jhw: Step over a JSON string. pos points at the opening quote; returns the
+ * character after the closing one, or NULL if it never closes. */
+static const char * wpa_config_json_skip_str(const char *pos, const char *end)
+{
+	pos++;
+	while (pos < end) {
+		if (*pos == '\\') {
+			/* An escape needs the character after it. Bail out
+			 * rather than step past end - computing more than one
+			 * past the buffer is not defined, even unread. */
+			if (end - pos < 2)
+				return NULL;
+			pos += 2;
+			continue;
+		}
+		if (*pos == '"')
+			return pos + 1;
+		pos++;
+	}
+
+	return NULL;
+}
+
+
+/* jhw: Span the object starting at pos (pointing at '{') through its matching
+ * '}'. Strings are stepped over, so a brace inside one cannot shift the
+ * depth. */
+static int wpa_config_json_span_obj(const char *pos, const char *end,
+				    const char **obj, size_t *obj_len)
+{
+	const char *start = pos;
+	int depth = 0;
+
+	while (pos < end) {
+		if (*pos == '"') {
+			pos = wpa_config_json_skip_str(pos, end);
+			if (!pos)
+				return 0;
+			continue;
+		}
+
+		if (*pos == '{') {
+			depth++;
+		} else if (*pos == '}') {
+			depth--;
+			if (depth == 0) {
+				*obj = start;
+				*obj_len = (size_t) (pos + 1 - start);
+				return 1;
+			}
+		}
+		pos++;
+	}
+
+	return 0;
+}
+
+
+/* jhw: Find the top-level member named ifname and hand back just its text.
+ *
+ * The deployed file is past what json_parse() will accept in one piece - it is
+ * a whole-device config, and the token budget in src/utils/json.c is sized for
+ * DPP messages - while the interface section on its own fits with room to
+ * spare. So the braces are matched here and only that section reaches the
+ * parser. Nothing here reads a value; that stays the parser's job.
+ *
+ * Looking only at depth 1 is also what makes a same-named object nested under
+ * some other section unable to shadow the real one. */
+static int wpa_config_json_top_object(const char *data, size_t len,
+				      const char *name,
+				      const char **obj, size_t *obj_len)
+{
+	const char *pos = data, *end = data + len;
+	size_t name_len = os_strlen(name);
+	int depth = 0;
+
+	while (pos < end) {
+		if (*pos == '"') {
+			const char *after = wpa_config_json_skip_str(pos, end);
+			const char *p;
+
+			if (!after)
+				return 0;
+			if (depth != 1 ||
+			    (size_t) (after - pos) != name_len + 2 ||
+			    os_memcmp(pos + 1, name, name_len) != 0) {
+				pos = after;
+				continue;
+			}
+
+			/* Name matches at the top level - take it only if it
+			 * actually keys an object. */
+			for (p = after; p < end && (*p == ' ' || *p == '\t' ||
+						    *p == '\r' || *p == '\n');
+			     p++)
+				;
+			if (p < end && *p == ':') {
+				for (p++; p < end && (*p == ' ' || *p == '\t' ||
+						      *p == '\r' ||
+						      *p == '\n'); p++)
+					;
+				if (p < end && *p == '{')
+					return wpa_config_json_span_obj(
+						p, end, obj, obj_len);
+			}
+			pos = after;
+			continue;
+		}
+
+		if (*pos == '{' || *pos == '[')
+			depth++;
+		else if (*pos == '}' || *pos == ']')
+			depth--;
+		pos++;
+	}
+
+	return 0;
+}
+
+
+/* jhw: Locate the per-interface object in the parsed init file.
+ *
+ * The file carries other objects keyed by interface name - a "mac" map, for
+ * one - so matching on the name alone can land on a decoy that holds no
+ * settings. Prefer an object that actually carries connect_threshold, and
+ * remember the first bare name match so that a real section missing the key is
+ * still reported as such rather than as a missing section.
+ *
+ * Note what this does not do: it searches at any depth, so the depth-1 rule
+ * that keeps a nested decoy out on the fast path does not hold here. Reaching
+ * a nested section is the point of this path, and down there a legitimate
+ * section and a decoy look alike - so the caller says in the log that the
+ * value came from a nested object. */
+static struct json_token *
+wpa_config_json_find_iface(struct json_token *node, const char *ifname,
+			   struct json_token **name_match)
+{
+	struct json_token *tok, *found;
+
+	for (tok = node->child; tok; tok = tok->sibling) {
+		if (tok->type == JSON_OBJECT && tok->name &&
+		    os_strcmp(tok->name, ifname) == 0) {
+			if (json_get_member(tok, "connect_threshold"))
+				return tok;
+			if (!*name_match)
+				*name_match = tok;
+		}
+
+		/* Recursion is bounded by the parser: json.c refuses a tree
+		 * deeper than JSON_MAX_DEPTH while building it, so anything
+		 * reaching here nests at most that far. */
+		found = wpa_config_json_find_iface(tok, ifname, name_match);
+		if (found)
+			return found;
+	}
+
+	return NULL;
+}
+
+
+/* jhw: Read an integer out of a JSON token, accepting the forms a hand-edited
+ * file actually contains: a bare number, a quoted number, and one written with
+ * a decimal point. Anything else is refused rather than run through atoi(),
+ * which turns "off" or "" into 0 - a value that passes the range check below
+ * and disables the filter while logging like a deliberate setting. */
+static int wpa_config_json_int(const struct json_token *tok, int *out)
+{
+	char *endp;
+	long val;
+
+	if (tok->type == JSON_NUMBER) {
+		*out = tok->number;
+		return 1;
+	}
+
+	if (tok->type == JSON_DOUBLE) {
+		double d = tok->dnumber;
+
+		/* The bound is far outside the accepted range on purpose: a
+		 * value like 70.5 has to survive to the range check so that it
+		 * gets the "outside -100..0" diagnostic. Written as a negated
+		 * comparison so that NaN is refused too. */
+		if (!(d > -1000000.0 && d < 1000000.0))
+			return 0;
+		/* Round rather than truncate. bss->level is whole dBm, and
+		 * truncation toward zero would quietly turn -70.6 into the
+		 * stricter -70. */
+		*out = (int) (d < 0 ? d - 0.5 : d + 0.5);
+		return 1;
+	}
+
+	if (tok->type != JSON_STRING || !tok->string || !tok->string[0])
+		return 0;
+
+	errno = 0;
+	val = strtol(tok->string, &endp, 10);
+	if (errno || endp == tok->string || *endp ||
+	    val < INT_MIN || val > INT_MAX)
+		return 0;
+
+	*out = (int) val;
+	return 1;
+}
+
+
+/* jhw: Read connect_threshold with the RFC7159 parser. Returns 0 when a tree
+ * was parsed - whether or not a value was found in it - and -1 when nothing
+ * could be parsed, so that the caller can fall back to the line scanner.
+ *
+ * The interface section is looked for at the top level first and only that
+ * section is handed to the parser: the deployed file is past the parser's
+ * token budget as a whole, and its section sits at the top level with a
+ * same-named decoy nested elsewhere, so this is both the case that has to work
+ * and the one that structurally cannot pick the decoy. A file whose section is
+ * nested instead still works through the whole-file parse below - but that
+ * search is depth-blind, so it carries a warning rather than the same
+ * guarantee. */
+static int wpa_config_read_json_init_strict(struct wpa_config *config,
+					    const char *ifname,
+					    const char *data, size_t len)
+{
+	struct json_token *root, *iface, *name_match = NULL, *val;
+	const char *obj;
+	size_t obj_len;
+	int num;
+
+	if (wpa_config_json_top_object(data, len, ifname, &obj, &obj_len)) {
+		root = json_parse(obj, obj_len);
+		if (!root) {
+			wpa_printf(MSG_WARNING,
+				   "JSON: %s section \"%s\" does not parse - falling back to the line scanner",
+				   WIFI_INIT_CONF_JSON, ifname);
+			return -1;
+		}
+		iface = root;
+	} else {
+		root = json_parse(data, len);
+		if (!root) {
+			wpa_printf(MSG_WARNING,
+				   "JSON: %s has no top-level \"%s\" section and does not parse whole - falling back to the line scanner",
+				   WIFI_INIT_CONF_JSON, ifname);
+			return -1;
+		}
+		iface = wpa_config_json_find_iface(root, ifname, &name_match);
+		if (!iface)
+			iface = name_match;
+		if (iface)
+			wpa_printf(MSG_WARNING,
+				   "JSON: %s has no top-level \"%s\" object - using a nested one, which any same-named object in the file could also match",
+				   WIFI_INIT_CONF_JSON, ifname);
+	}
+
+	if (!iface) {
+		wpa_printf(MSG_INFO,
+			   "JSON: %s has no \"%s\" section - keeping connect_threshold=%d",
+			   WIFI_INIT_CONF_JSON, ifname,
+			   config->connect_threshold);
+		goto out;
+	}
+
+	val = json_get_member(iface, "connect_threshold");
+	if (!val || !wpa_config_json_int(val, &num)) {
+		wpa_printf(MSG_INFO,
+			   "JSON: %s section \"%s\" carries no usable integer connect_threshold - keeping %d",
+			   WIFI_INIT_CONF_JSON, ifname,
+			   config->connect_threshold);
+		goto out;
+	}
+
+	if (wpa_config_apply_connect_threshold(config, ifname, num))
+		wpa_printf(MSG_INFO, "JSON: %s connect_threshold=%d (from %s)",
+			   ifname, config->connect_threshold,
+			   WIFI_INIT_CONF_JSON);
+
+out:
+	json_free(root);
+	return 0;
+}
+
+#endif /* CONFIG_JSON */
+
+
+void wpa_config_read_json_init(struct wpa_config *config,	//jhw
+			       const char *ifname)
+{
+	if (!ifname)
+		return;
+
+	/* jhw: This runs after wpa_config_read(), so a value here overrides one
+	 * set in wpa_supplicant.conf. The conf field is not written back and
+	 * this file wins at every start; the field exists so that the threshold
+	 * can be lifted at runtime with "wpa_cli set connect_threshold 0". */
+#ifdef CONFIG_JSON
+	char *data;
+	size_t len;
+
+	data = os_readfile(WIFI_INIT_CONF_JSON, &len);
+	if (data) {
+		int parsed = -1;
+
+		if (len == 0) {
+			wpa_printf(MSG_DEBUG,
+				   "JSON: %s is empty - keeping connect_threshold=%d",
+				   WIFI_INIT_CONF_JSON,
+				   config->connect_threshold);
+			os_free(data);
+			return;
+		} else if (len > WIFI_INIT_CONF_MAX_SIZE) {
+			wpa_printf(MSG_WARNING,
+				   "JSON: %s is %lu bytes - too large to parse as a whole, using the line scanner",
+				   WIFI_INIT_CONF_JSON, (unsigned long) len);
+		} else {
+			parsed = wpa_config_read_json_init_strict(config,
+								  ifname, data,
+								  len);
+		}
+		os_free(data);
+		if (parsed == 0)
+			return;
+	}
+#endif /* CONFIG_JSON */
+
+	wpa_config_read_json_init_scan(config, ifname);
 }
 
 
@@ -5976,6 +6387,14 @@ static const struct global_parse_data global_fields[] = {
 	{ INT(bss_expiration_scan_count), 0 },
 	{ INT_RANGE(filter_ssids, 0, 1), 0 },
 	{ INT_RANGE(filter_rssi, -100, 0), 0 },
+	/* jhw: reinstates the field 249f778 dropped when it moved this
+	 * setting to the JSON init file. It is not written back to
+	 * wpa_supplicant.conf and the JSON file wins at every start; it
+	 * exists so that "wpa_cli set connect_threshold 0" can lift the
+	 * filter at runtime, without a restart, when the threshold is what
+	 * is keeping the device off the air. */
+	{ INT_RANGE(connect_threshold, CONNECT_THRESHOLD_MIN,
+		    CONNECT_THRESHOLD_MAX), 0 },	//jhw
 	{ INT(max_num_sta), 0 },
 	{ INT_RANGE(ap_isolate, 0, 1), 0 },
 	{ INT_RANGE(disassoc_low_ack, 0, 1), 0 },

@@ -597,14 +597,6 @@ static struct wpa_bss * wpa_bss_add(struct wpa_supplicant *wpa_s,
 	if (bss == NULL)
 		return NULL;
 
-	if (wpa_s->conf->connect_threshold != 0 && res->level < wpa_s->conf->connect_threshold)	//jhw
-	{
-		wpa_msg(wpa_s, MSG_INFO, "BSS: freq %d bssid " MACSTR
-			" level %d < connect threshold %d", res->freq, MAC2STR(res->bssid), res->level, wpa_s->conf->connect_threshold);
-		os_free(bss);
-		return NULL;
-	}
-
 	bss->id = wpa_s->bss_next_id++;
 	bss->last_update_idx = wpa_s->bss_update_idx;
 	wpa_bss_copy_res(bss, res, fetch_time);

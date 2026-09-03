@@ -48,6 +48,14 @@
 #define DEFAULT_EXTENDED_KEY_ID 0
 #define DEFAULT_SCAN_RES_VALID_FOR_CONNECT 5
 #define DEFAULT_CONNECT_THRESHOLD	-100		//jhw
+/* jhw: accepted range for connect_threshold, matching the INT_RANGE of
+ * filter_rssi, the upstream global field of the same shape. RSSI is
+ * negative, so a positive value would gate every BSS; 0 disables the
+ * filter. */
+#define CONNECT_THRESHOLD_MIN		-100		//jhw
+#define CONNECT_THRESHOLD_MAX		0		//jhw
+/* Accepted, but reported: above this, most APs become unselectable. */
+#define CONNECT_THRESHOLD_LOOSE		-30		//jhw
 #define DEFAULT_MLD_CONNECT_BAND_PREF MLD_CONNECT_BAND_PREF_AUTO
 
 #include "config_ssid.h"
@@ -1941,6 +1949,22 @@ struct wpa_config {
 	 */
 	int pr_preferred_role;
 
+	/**
+	 * connect_threshold - Minimum RSSI for selecting a BSS
+	 *
+	 * 0 = do not filter
+	 * -n = do not select a BSS weaker than -n dBm
+	 *
+	 * The BSS stays in the table either way, so a filtered AP is still
+	 * listed by scan_results; only selection is gated, and the BSS in use
+	 * is exempt.
+	 *
+	 * /usr/local/etc/wifi_init_conf.json is read after this file and wins
+	 * where it names the interface, so a value set here is a runtime
+	 * override rather than a persistent setting - SAVE_CONFIG does not
+	 * write it back. Setting it to 0 with "wpa_cli set connect_threshold 0"
+	 * lifts the filter without a restart.
+	 */
 	int connect_threshold;		//jhw
 };
 
