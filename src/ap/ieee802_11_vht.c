@@ -12,12 +12,31 @@
 
 #include "utils/common.h"
 #include "common/ieee802_11_defs.h"
+#include "common/hw_features_common.h"
 #include "hostapd.h"
 #include "ap_config.h"
 #include "sta_info.h"
 #include "beacon.h"
 #include "ieee802_11.h"
 #include "dfs.h"
+
+
+static struct hostapd_hw_modes *
+mode_for_vht_capab(struct hostapd_data *hapd, struct hostapd_hw_modes *mode)
+{
+	if (mode->mode == HOSTAPD_MODE_IEEE80211G && hapd->conf->vendor_vht &&
+	    mode->vht_capab == 0 && hapd->iface->hw_features) {
+		int i;
+
+		for (i = 0; i < hapd->iface->num_hw_features; i++) {
+			if (hapd->iface->hw_features[i].mode ==
+			    HOSTAPD_MODE_IEEE80211A)
+				return &hapd->iface->hw_features[i];
+		}
+	}
+
+	return mode;
+}
 
 
 u8 * hostapd_eid_vht_capabilities(struct hostapd_data *hapd, u8 *eid, u32 nsts)
@@ -29,18 +48,7 @@ u8 * hostapd_eid_vht_capabilities(struct hostapd_data *hapd, u8 *eid, u32 nsts)
 	if (!mode || is_6ghz_op_class(hapd->iconf->op_class))
 		return eid;
 
-	if (mode->mode == HOSTAPD_MODE_IEEE80211G && hapd->conf->vendor_vht &&
-	    mode->vht_capab == 0 && hapd->iface->hw_features) {
-		int i;
-
-		for (i = 0; i < hapd->iface->num_hw_features; i++) {
-			if (hapd->iface->hw_features[i].mode ==
-			    HOSTAPD_MODE_IEEE80211A) {
-				mode = &hapd->iface->hw_features[i];
-				break;
-			}
-		}
-	}
+	mode = mode_for_vht_capab(hapd, mode);
 
 	*pos++ = WLAN_EID_VHT_CAP;
 	*pos++ = sizeof(*cap);
@@ -75,6 +83,13 @@ u8 * hostapd_eid_vht_operation(struct hostapd_data *hapd, u8 *eid)
 {
 	struct ieee80211_vht_operation *oper;
 	u8 *pos = eid;
+	enum oper_chan_width oper_chwidth =
+		hostapd_get_oper_chwidth(hapd->iconf);
+	u8 seg0 = hapd->iconf->vht_oper_centr_freq_seg0_idx;
+	u8 seg1 = hapd->iconf->vht_oper_centr_freq_seg1_idx;
+#ifdef CONFIG_IEEE80211BE
+	u16 punct_bitmap = hostapd_get_punct_bitmap(hapd);
+#endif /* CONFIG_IEEE80211BE */
 
 	if (is_6ghz_op_class(hapd->iconf->op_class))
 		return eid;
@@ -85,23 +100,32 @@ u8 * hostapd_eid_vht_operation(struct hostapd_data *hapd, u8 *eid)
 	oper = (struct ieee80211_vht_operation *) pos;
 	os_memset(oper, 0, sizeof(*oper));
 
+#ifdef CONFIG_IEEE80211BE
+	if (punct_bitmap) {
+		oper_chwidth = hostapd_get_oper_chwidth(hapd->iconf);
+		seg0 = hostapd_get_oper_centr_freq_seg0_idx(hapd->iconf);
+		seg1 = hostapd_get_oper_centr_freq_seg1_idx(hapd->iconf);
+		punct_update_legacy_bw(punct_bitmap,
+				       hapd->iconf->channel,
+				       &oper_chwidth, &seg0, &seg1);
+	}
+#endif /* CONFIG_IEEE80211BE */
+
 	/*
 	 * center freq = 5 GHz + (5 * index)
 	 * So index 42 gives center freq 5.210 GHz
 	 * which is channel 42 in 5G band
 	 */
-	oper->vht_op_info_chan_center_freq_seg0_idx =
-		hapd->iconf->vht_oper_centr_freq_seg0_idx;
-	oper->vht_op_info_chan_center_freq_seg1_idx =
-		hapd->iconf->vht_oper_centr_freq_seg1_idx;
+	oper->vht_op_info_chan_center_freq_seg0_idx = seg0;
+	oper->vht_op_info_chan_center_freq_seg1_idx = seg1;
 
-	oper->vht_op_info_chwidth = hapd->iconf->vht_oper_chwidth;
-	if (hapd->iconf->vht_oper_chwidth == 2) {
+	oper->vht_op_info_chwidth = oper_chwidth;
+	if (oper_chwidth == CONF_OPER_CHWIDTH_160MHZ) {
 		/*
 		 * Convert 160 MHz channel width to new style as interop
 		 * workaround.
 		 */
-		oper->vht_op_info_chwidth = 1;
+		oper->vht_op_info_chwidth = CHANWIDTH_80MHZ;
 		oper->vht_op_info_chan_center_freq_seg1_idx =
 			oper->vht_op_info_chan_center_freq_seg0_idx;
 		if (hapd->iconf->channel <
@@ -109,12 +133,12 @@ u8 * hostapd_eid_vht_operation(struct hostapd_data *hapd, u8 *eid)
 			oper->vht_op_info_chan_center_freq_seg0_idx -= 8;
 		else
 			oper->vht_op_info_chan_center_freq_seg0_idx += 8;
-	} else if (hapd->iconf->vht_oper_chwidth == 3) {
+	} else if (oper_chwidth == CONF_OPER_CHWIDTH_80P80MHZ) {
 		/*
 		 * Convert 80+80 MHz channel width to new style as interop
 		 * workaround.
 		 */
-		oper->vht_op_info_chwidth = 1;
+		oper->vht_op_info_chwidth = CHANWIDTH_80MHZ;
 	}
 
 	/* VHT Basic MCS set comes from hw */
@@ -126,9 +150,10 @@ u8 * hostapd_eid_vht_operation(struct hostapd_data *hapd, u8 *eid)
 }
 
 
-static int check_valid_vht_mcs(struct hostapd_hw_modes *mode,
+static int check_valid_vht_mcs(struct hostapd_data *hapd,
 			       const u8 *sta_vht_capab)
 {
+	struct hostapd_hw_modes *mode = hapd->iface->current_mode;
 	const struct ieee80211_vht_capabilities *vht_cap;
 	struct ieee80211_vht_capabilities ap_vht_cap;
 	u16 sta_rx_mcs_set, ap_tx_mcs_set;
@@ -136,6 +161,7 @@ static int check_valid_vht_mcs(struct hostapd_hw_modes *mode,
 
 	if (!mode)
 		return 1;
+	mode = mode_for_vht_capab(hapd, mode);
 
 	/*
 	 * Disable VHT caps for STAs for which there is not even a single
@@ -152,10 +178,10 @@ static int check_valid_vht_mcs(struct hostapd_hw_modes *mode,
 	ap_tx_mcs_set = le_to_host16(ap_vht_cap.vht_supported_mcs_set.tx_map);
 
 	for (i = 0; i < VHT_RX_NSS_MAX_STREAMS; i++) {
-		if ((ap_tx_mcs_set & (0x3 << (i * 2))) == 3)
+		if (((ap_tx_mcs_set >> (i * 2)) & 0x3) == 3)
 			continue;
 
-		if ((sta_rx_mcs_set & (0x3 << (i * 2))) == 3)
+		if (((sta_rx_mcs_set >> (i * 2)) & 0x3) == 3)
 			continue;
 
 		return 1;
@@ -172,8 +198,9 @@ u16 copy_sta_vht_capab(struct hostapd_data *hapd, struct sta_info *sta,
 {
 	/* Disable VHT caps for STAs associated to no-VHT BSSes. */
 	if (!vht_capab || !(sta->flags & WLAN_STA_WMM) ||
-	    !hapd->iconf->ieee80211ac || hapd->conf->disable_11ac ||
-	    !check_valid_vht_mcs(hapd->iface->current_mode, vht_capab)) {
+	    !hostapd_is_vht_enabled(hapd) ||
+	    !check_valid_vht_mcs(hapd, vht_capab) ||
+	    !(sta->flags & WLAN_STA_HT)) {
 		sta->flags &= ~WLAN_STA_VHT;
 		os_free(sta->vht_capabilities);
 		sta->vht_capabilities = NULL;
@@ -198,7 +225,7 @@ u16 copy_sta_vht_capab(struct hostapd_data *hapd, struct sta_info *sta,
 u16 copy_sta_vht_oper(struct hostapd_data *hapd, struct sta_info *sta,
 		      const u8 *vht_oper)
 {
-	if (!vht_oper) {
+	if (!vht_oper || !(sta->flags & WLAN_STA_VHT)) {
 		os_free(sta->vht_operation);
 		sta->vht_operation = NULL;
 		return WLAN_STATUS_SUCCESS;

@@ -11,9 +11,7 @@
  */
 
 #include "includes.h"
-#ifdef ANDROID
 #include <sys/stat.h>
-#endif /* ANDROID */
 
 #include "common.h"
 #include "config.h"
@@ -53,6 +51,13 @@ static int wpa_config_validate_network(struct wpa_ssid *ssid, int line)
 		ssid->group_cipher &= ~WPA_CIPHER_CCMP;
 	}
 
+	if (is_6ghz_freq(ssid->frequency) && ssid->mode == WPAS_MODE_MESH &&
+	    ssid->key_mgmt == WPA_KEY_MGMT_NONE) {
+		wpa_printf(MSG_ERROR,
+			   "Line %d: key_mgmt for mesh network in 6 GHz should be SAE",
+			   line);
+		errors++;
+	}
 	if (ssid->mode == WPAS_MODE_MESH &&
 	    (ssid->key_mgmt != WPA_KEY_MGMT_NONE &&
 	    ssid->key_mgmt != WPA_KEY_MGMT_SAE)) {
@@ -289,16 +294,79 @@ static int wpa_config_process_blob(struct wpa_config *config, FILE *f,
 #endif /* CONFIG_NO_CONFIG_BLOBS */
 
 
-struct wpa_config * wpa_config_read(const char *name, struct wpa_config *cfgp)
+static struct wpa_dev_ik * wpa_config_read_identity(FILE *f, int *line, int id)
+{
+	struct wpa_dev_ik *identity;
+	int errors = 0, end = 0;
+	char buf[256], *pos, *pos2;
+
+	wpa_printf(MSG_MSGDUMP, "Line: %d - start of a new identity block",
+		   *line);
+	identity = os_zalloc(sizeof(*identity));
+	if (!identity)
+		return NULL;
+	identity->id = id;
+
+	while (wpa_config_get_line(buf, sizeof(buf), f, line, &pos)) {
+		if (os_strcmp(pos, "}") == 0) {
+			end = 1;
+			break;
+		}
+
+		pos2 = os_strchr(pos, '=');
+		if (!pos2) {
+			wpa_printf(MSG_ERROR,
+				   "Line %d: Invalid identity line '%s'.",
+				   *line, pos);
+			errors++;
+			continue;
+		}
+
+		*pos2++ = '\0';
+		if (*pos2 == '"') {
+			if (os_strchr(pos2 + 1, '"') == NULL) {
+				wpa_printf(MSG_ERROR,
+					   "Line %d: invalid quotation '%s'.",
+					   *line, pos2);
+				errors++;
+				continue;
+			}
+		}
+
+		if (wpa_config_set_identity(identity, pos, pos2, *line) < 0)
+			errors++;
+	}
+
+	if (!end) {
+		wpa_printf(MSG_ERROR,
+			   "Line %d: identity block was not terminated properly.",
+			   *line);
+		errors++;
+	}
+
+	if (errors) {
+		wpa_config_free_identity(identity);
+		identity = NULL;
+	}
+
+	return identity;
+}
+
+
+struct wpa_config * wpa_config_read(const char *name, struct wpa_config *cfgp,
+				    bool ro, bool show_details)
 {
 	FILE *f;
-	char buf[512], *pos;
+	char buf[1024], *pos;
 	int errors = 0, line = 0;
 	struct wpa_ssid *ssid, *tail, *head;
 	struct wpa_cred *cred, *cred_tail, *cred_head;
+	struct wpa_dev_ik *identity, *identity_tail, *identity_head;
 	struct wpa_config *config;
-	int id = 0;
-	int cred_id = 0;
+	static int id = 0;
+	static int cred_id = 0;
+	static int base_identity_id = 0;
+	int identity_id = base_identity_id;
 
 	if (name == NULL)
 		return NULL;
@@ -317,18 +385,28 @@ struct wpa_config * wpa_config_read(const char *name, struct wpa_config *cfgp)
 	cred_tail = cred_head = config->cred;
 	while (cred_tail && cred_tail->next)
 		cred_tail = cred_tail->next;
+	identity_tail = identity_head = config->identity;
+	while (identity_tail && identity_tail->next)
+		identity_tail = identity_tail->next;
 
 	wpa_printf(MSG_DEBUG, "Reading configuration file '%s'", name);
 	f = fopen(name, "r");
 	if (f == NULL) {
-		wpa_printf(MSG_ERROR, "Failed to open config file '%s', "
-			   "error: %s", name, strerror(errno));
+		if (show_details)
+			wpa_printf(MSG_ERROR,
+				   "Failed to open config file '%s', error: %s",
+				   name, strerror(errno));
 		if (config != cfgp)
 			os_free(config);
 		return NULL;
 	}
 
 	while (wpa_config_get_line(buf, sizeof(buf), f, &line, &pos)) {
+#ifndef WPA_IGNORE_CONFIG_ERRORS
+		if (errors && !show_details)
+			break;
+#endif /* WPA_IGNORE_CONFIG_ERRORS */
+
 		if (os_strcmp(pos, "network={") == 0) {
 			ssid = wpa_config_read_network(f, &line, id++);
 			if (ssid == NULL) {
@@ -337,6 +415,8 @@ struct wpa_config * wpa_config_read(const char *name, struct wpa_config *cfgp)
 				errors++;
 				continue;
 			}
+			ssid->go_dik_id += base_identity_id;
+			ssid->ro = ro;
 			if (head == NULL) {
 				head = tail = ssid;
 			} else {
@@ -374,9 +454,28 @@ struct wpa_config * wpa_config_read(const char *name, struct wpa_config *cfgp)
 				continue;
 			}
 #endif /* CONFIG_NO_CONFIG_BLOBS */
-		} else if (wpa_config_process_global(config, pos, line) < 0) {
-			wpa_printf(MSG_ERROR, "Line %d: Invalid configuration "
-				   "line '%s'.", line, pos);
+		} else if (os_strcmp(pos, "identity={") == 0) {
+			identity = wpa_config_read_identity(f, &line,
+							    ++identity_id);
+			if (!identity) {
+				wpa_printf(MSG_ERROR,
+					   "Line %d: failed to parse identity block.",
+					   line);
+				errors++;
+				continue;
+			}
+			if (!identity_head) {
+				identity_head = identity_tail = identity;
+			} else {
+				identity_tail->next = identity;
+				identity_tail = identity;
+			}
+		} else if (wpa_config_process_global(config, pos, line,
+						     show_details) < 0) {
+			if (show_details)
+				wpa_printf(MSG_ERROR,
+					   "Line %d: Invalid configuration line '%s'.",
+					   line, pos);
 			errors++;
 			continue;
 		}
@@ -387,6 +486,9 @@ struct wpa_config * wpa_config_read(const char *name, struct wpa_config *cfgp)
 	config->ssid = head;
 	wpa_config_debug_dump_networks(config);
 	config->cred = cred_head;
+	config->identity = identity_head;
+
+	base_identity_id = identity_id;
 
 #ifndef WPA_IGNORE_CONFIG_ERRORS
 	if (errors) {
@@ -608,6 +710,17 @@ static void write_p2p_client_list(FILE *f, struct wpa_ssid *ssid)
 }
 
 
+static void write_p2p2_client_list(FILE *f, struct wpa_ssid *ssid)
+{
+	char *value = wpa_config_get(ssid, "p2p2_client_list");
+
+	if (!value)
+		return;
+	fprintf(f, "\tp2p2_client_list=%s\n", value);
+	os_free(value);
+}
+
+
 static void write_psk_list(FILE *f, struct wpa_ssid *ssid)
 {
 	struct psk_list_entry *psk;
@@ -657,7 +770,8 @@ static void write_mka_ckn(FILE *f, struct wpa_ssid *ssid)
 #endif /* CONFIG_MACSEC */
 
 
-static void wpa_config_write_network(FILE *f, struct wpa_ssid *ssid)
+static void wpa_config_write_network(FILE *f, struct wpa_ssid *ssid,
+				     struct wpa_config *config)
 {
 #define STR(t) write_str(f, #t, ssid)
 #define INT(t) write_int(f, #t, ssid->t, 0)
@@ -676,6 +790,7 @@ static void wpa_config_write_network(FILE *f, struct wpa_ssid *ssid)
 	STR(sae_password);
 	STR(sae_password_id);
 	write_int(f, "sae_pwe", ssid->sae_pwe, DEFAULT_SAE_PWE);
+	INT(sae_password_id_change);
 	write_proto(f, ssid);
 	write_key_mgmt(f, ssid);
 	INT_DEF(bg_scan_period, DEFAULT_BG_SCAN_PERIOD);
@@ -686,6 +801,7 @@ static void wpa_config_write_network(FILE *f, struct wpa_ssid *ssid)
 	STR(bgscan);
 	STR(autoscan);
 	STR(scan_freq);
+	STR(freq_list);
 #ifdef IEEE8021X_EAPOL
 	write_eap(f, ssid);
 	STR(identity);
@@ -699,7 +815,6 @@ static void wpa_config_write_network(FILE *f, struct wpa_ssid *ssid)
 	STR(client_cert);
 	STR(private_key);
 	STR(private_key_passwd);
-	STR(dh_file);
 	STR(subject_match);
 	STR(check_cert_subject);
 	STR(altsubject_match);
@@ -710,7 +825,6 @@ static void wpa_config_write_network(FILE *f, struct wpa_ssid *ssid)
 	STR(client_cert2);
 	STR(private_key2);
 	STR(private_key2_passwd);
-	STR(dh_file2);
 	STR(subject_match2);
 	STR(check_cert_subject2);
 	STR(altsubject_match2);
@@ -721,7 +835,6 @@ static void wpa_config_write_network(FILE *f, struct wpa_ssid *ssid)
 	STR(machine_client_cert);
 	STR(machine_private_key);
 	STR(machine_private_key_passwd);
-	STR(machine_dh_file);
 	STR(machine_subject_match);
 	STR(machine_check_cert_subject);
 	STR(machine_altsubject_match);
@@ -768,8 +881,10 @@ static void wpa_config_write_network(FILE *f, struct wpa_ssid *ssid)
 	INT_DEFe(sim_num, sim_num, DEFAULT_USER_SELECTED_SIM);
 #endif /* IEEE8021X_EAPOL */
 	INT(mode);
+#ifdef CONFIG_MESH
 	INT(no_auto_peer);
-	INT(mesh_fwding);
+	INT_DEF(mesh_fwding, DEFAULT_MESH_FWDING);
+#endif /* CONFIG_MESH */
 	INT(frequency);
 	INT(enable_edmg);
 	INT(edmg_channel);
@@ -796,7 +911,22 @@ static void wpa_config_write_network(FILE *f, struct wpa_ssid *ssid)
 #ifdef CONFIG_P2P
 	write_go_p2p_dev_addr(f, ssid);
 	write_p2p_client_list(f, ssid);
+	write_p2p2_client_list(f, ssid);
 	write_psk_list(f, ssid);
+	{
+		struct wpa_dev_ik *dev_ik;
+		int i = 1, go_dik_id = 0;
+
+		for (dev_ik = config->identity;
+		     dev_ik;
+		     dev_ik = dev_ik->next, i++) {
+			if (dev_ik->id == ssid->go_dik_id) {
+				go_dik_id = i;
+				break;
+			}
+		}
+		write_int(f, "go_dik_id", go_dik_id, 0);
+	}
 #endif /* CONFIG_P2P */
 	INT(ap_max_inactivity);
 	INT(dtim_period);
@@ -808,8 +938,11 @@ static void wpa_config_write_network(FILE *f, struct wpa_ssid *ssid)
 	INT(macsec_integ_only);
 	INT(macsec_replay_protect);
 	INT(macsec_replay_window);
+	INT(macsec_offload);
 	INT(macsec_port);
 	INT_DEF(mka_priority, DEFAULT_PRIO_NOT_KEY_SERVER);
+	INT(macsec_csindex);
+	INT(macsec_icv_indicator);
 #endif /* CONFIG_MACSEC */
 #ifdef CONFIG_HS20
 	INT(update_identifier);
@@ -835,12 +968,14 @@ static void wpa_config_write_network(FILE *f, struct wpa_ssid *ssid)
 	STR(dpp_csign);
 	STR(dpp_pp_key);
 	INT(dpp_pfs);
+	INT(dpp_connector_privacy);
 #endif /* CONFIG_DPP */
 	INT(owe_group);
 	INT(owe_only);
 	INT(owe_ptk_workaround);
 	INT(multi_ap_backhaul_sta);
 	INT(ft_eap_pmksa_caching);
+	INT(multi_ap_profile);
 	INT(beacon_prot);
 	INT(transition_disable);
 	INT(sae_pk);
@@ -881,7 +1016,33 @@ static void wpa_config_write_network(FILE *f, struct wpa_ssid *ssid)
 #ifdef CONFIG_HE_OVERRIDES
 	INT(disable_he);
 #endif /* CONFIG_HE_OVERRIDES */
+	INT(disable_eht);
+	INT(enable_4addr_mode);
+	INT(max_idle);
+	INT(ssid_protection);
+	INT_DEF(rsn_overriding, RSN_OVERRIDING_NOT_SET);
+#ifdef CONFIG_SAE
+	if (ssid->alt_sae_password_ids) {
+		struct wpabuf_array *ids = ssid->alt_sae_password_ids;
+		unsigned int idx;
+		char hex[255 * 2 + 1];
 
+		for (idx = 0; idx < ids->num; idx++) {
+			wpa_snprintf_hex(hex, sizeof(hex),
+					 wpabuf_head(ids->buf[idx]),
+					 wpabuf_len(ids->buf[idx]));
+			fprintf(f, "\talt_sae_password_ids=%s\n", hex);
+		}
+	}
+#endif /* CONFIG_SAE */
+#ifdef CONFIG_PMKSA_PRIVACY
+	INT(pmksa_privacy);
+#endif /* CONFIG_PMKSA_PRIVACY */
+#ifdef CONFIG_IEEE8021X_AUTH
+	INT(eap_over_auth_frame);
+#endif /* CONFIG_IEEE8021X_AUTH */
+	INT_DEF(drop_unicast_ip_in_l2_multicast, 1);
+	INT_DEF(always_use_proxy_arp, 0);
 #undef STR
 #undef INT
 #undef INT_DEF
@@ -922,12 +1083,6 @@ static void wpa_config_write_cred(FILE *f, struct wpa_cred *cred)
 	if (cred->domain_suffix_match)
 		fprintf(f, "\tdomain_suffix_match=\"%s\"\n",
 			cred->domain_suffix_match);
-	if (cred->roaming_consortium_len) {
-		fprintf(f, "\troaming_consortium=");
-		for (i = 0; i < cred->roaming_consortium_len; i++)
-			fprintf(f, "%02x", cred->roaming_consortium[i]);
-		fprintf(f, "\n");
-	}
 	if (cred->eap_method) {
 		const char *name;
 		name = eap_get_name(cred->eap_method[0].vendor,
@@ -1003,12 +1158,32 @@ static void wpa_config_write_cred(FILE *f, struct wpa_cred *cred)
 		}
 	}
 
-	if (cred->required_roaming_consortium_len) {
-		fprintf(f, "\trequired_roaming_consortium=");
-		for (i = 0; i < cred->required_roaming_consortium_len; i++)
-			fprintf(f, "%02x",
-				cred->required_roaming_consortium[i]);
-		fprintf(f, "\n");
+	if (cred->num_home_ois) {
+		size_t j;
+
+		fprintf(f, "\thome_ois=\"");
+		for (i = 0; i < cred->num_home_ois; i++) {
+			if (i > 0)
+				fprintf(f, ",");
+			for (j = 0; j < cred->home_ois_len[i]; j++)
+				fprintf(f, "%02x",
+					cred->home_ois[i][j]);
+		}
+		fprintf(f, "\"\n");
+	}
+
+	if (cred->num_required_home_ois) {
+		size_t j;
+
+		fprintf(f, "\trequired_home_ois=\"");
+		for (i = 0; i < cred->num_required_home_ois; i++) {
+			if (i > 0)
+				fprintf(f, ",");
+			for (j = 0; j < cred->required_home_ois_len[i]; j++)
+				fprintf(f, "%02x",
+					cred->required_home_ois[i][j]);
+		}
+		fprintf(f, "\"\n");
 	}
 
 	if (cred->num_roaming_consortiums) {
@@ -1038,6 +1213,13 @@ static void wpa_config_write_cred(FILE *f, struct wpa_cred *cred)
 		fprintf(f, "\tcert_id=\"%s\"\n", cred->cert_id);
 	if (cred->ca_cert_id)
 		fprintf(f, "\tca_cert_id=\"%s\"\n", cred->ca_cert_id);
+
+	if (cred->imsi_privacy_cert)
+		fprintf(f, "\timsi_privacy_cert=\"%s\"\n",
+			cred->imsi_privacy_cert);
+	if (cred->imsi_privacy_attr)
+		fprintf(f, "\timsi_privacy_attr=\"%s\"\n",
+			cred->imsi_privacy_attr);
 }
 
 
@@ -1092,15 +1274,21 @@ static void wpa_config_write_global(FILE *f, struct wpa_config *config)
 			config->disable_scan_offload);
 	if (config->fast_reauth != DEFAULT_FAST_REAUTH)
 		fprintf(f, "fast_reauth=%d\n", config->fast_reauth);
+#ifndef CONFIG_OPENSC_ENGINE_PATH
 	if (config->opensc_engine_path)
 		fprintf(f, "opensc_engine_path=%s\n",
 			config->opensc_engine_path);
+#endif /* CONFIG_OPENSC_ENGINE_PATH */
+#ifndef CONFIG_PKCS11_ENGINE_PATH
 	if (config->pkcs11_engine_path)
 		fprintf(f, "pkcs11_engine_path=%s\n",
 			config->pkcs11_engine_path);
+#endif /* CONFIG_PKCS11_ENGINE_PATH */
+#ifndef CONFIG_PKCS11_MODULE_PATH
 	if (config->pkcs11_module_path)
 		fprintf(f, "pkcs11_module_path=%s\n",
 			config->pkcs11_module_path);
+#endif /* CONFIG_PKCS11_MODULE_PATH */
 	if (config->openssl_ciphers)
 		fprintf(f, "openssl_ciphers=%s\n", config->openssl_ciphers);
 	if (config->pcsc_reader)
@@ -1254,6 +1442,26 @@ static void wpa_config_write_global(FILE *f, struct wpa_config *config)
 	if (config->p2p_6ghz_disable)
 		fprintf(f, "p2p_6ghz_disable=%d\n", config->p2p_6ghz_disable);
 
+	if (config->p2p_bootstrap_methods)
+		fprintf(f, "p2p_bootstrap_methods=%d\n",
+			config->p2p_bootstrap_methods);
+	if (config->p2p_pasn_type)
+		fprintf(f, "p2p_pasn_type=%d\n", config->p2p_pasn_type);
+	if (config->p2p_comeback_after)
+		fprintf(f, "p2p_comeback_after=%d\n",
+			config->p2p_comeback_after);
+	if (config->p2p_twt_power_mgmt)
+		fprintf(f, "p2p_twt_power_mgmt=%d\n",
+			config->p2p_twt_power_mgmt);
+	if (config->p2p_chan_switch_req_enable)
+		fprintf(f, "p2p_chan_switch_req_enable=%d\n",
+			config->p2p_chan_switch_req_enable);
+	if (config->p2p_reg_info)
+		fprintf(f, "p2p_reg_info=%d\n", config->p2p_reg_info);
+	if (config->p2p_assisted_dfs_chan_enable)
+		fprintf(f, "p2p_assisted_dfs_chan_enable=%d\n",
+			config->p2p_assisted_dfs_chan_enable);
+
 	if (WPA_GET_BE32(config->ip_addr_go))
 		fprintf(f, "ip_addr_go=%u.%u.%u.%u\n",
 			config->ip_addr_go[0], config->ip_addr_go[1],
@@ -1348,6 +1556,9 @@ static void wpa_config_write_global(FILE *f, struct wpa_config *config)
 		fprintf(f, "dtim_period=%d\n", config->dtim_period);
 	if (config->beacon_int)
 		fprintf(f, "beacon_int=%d\n", config->beacon_int);
+
+	if (config->sae_check_mfp)
+		fprintf(f, "sae_check_mfp=%d\n", config->sae_check_mfp);
 
 	if (config->sae_groups) {
 		int i;
@@ -1520,8 +1731,8 @@ static void wpa_config_write_global(FILE *f, struct wpa_config *config)
 	if (config->ftm_initiator)
 		fprintf(f, "ftm_initiator=%d\n", config->ftm_initiator);
 
-	if (config->osu_dir)
-		fprintf(f, "osu_dir=%s\n", config->osu_dir);
+	if (config->twt_requester)
+		fprintf(f, "twt_requester=%d\n", config->twt_requester);
 
 	if (config->fst_group_id)
 		fprintf(f, "fst_group_id=%s\n", config->fst_group_id);
@@ -1538,6 +1749,19 @@ static void wpa_config_write_global(FILE *f, struct wpa_config *config)
 	if (config->dpp_config_processing)
 		fprintf(f, "dpp_config_processing=%d\n",
 			config->dpp_config_processing);
+	if (config->dpp_name)
+		fprintf(f, "dpp_name=%s\n", config->dpp_name);
+	if (config->dpp_mud_url)
+		fprintf(f, "dpp_mud_url=%s\n", config->dpp_mud_url);
+	if (config->dpp_extra_conf_req_name)
+		fprintf(f, "dpp_extra_conf_req_name=%s\n",
+			config->dpp_extra_conf_req_name);
+	if (config->dpp_extra_conf_req_value)
+		fprintf(f, "dpp_extra_conf_req_value=%s\n",
+			config->dpp_extra_conf_req_value);
+	if (config->dpp_connector_privacy_default)
+		fprintf(f, "dpp_connector_privacy_default=%d\n",
+			config->dpp_connector_privacy_default);
 	if (config->coloc_intf_reporting)
 		fprintf(f, "coloc_intf_reporting=%d\n",
 			config->coloc_intf_reporting);
@@ -1558,6 +1782,61 @@ static void wpa_config_write_global(FILE *f, struct wpa_config *config)
 	if (config->wowlan_disconnect_on_deinit)
 		fprintf(f, "wowlan_disconnect_on_deinit=%d\n",
 			config->wowlan_disconnect_on_deinit);
+	if (config->rsn_overriding)
+		fprintf(f, "rsn_overriding=%d\n", config->rsn_overriding);
+	if (config->mld_force_single_link)
+		fprintf(f, "mld_force_single_link=1\n");
+#ifdef CONFIG_TESTING_OPTIONS
+	if (config->mld_connect_band_pref != MLD_CONNECT_BAND_PREF_AUTO)
+		fprintf(f, "mld_connect_band_pref=%d\n",
+			config->mld_connect_band_pref);
+	if (!is_zero_ether_addr(config->mld_connect_bssid_pref))
+		fprintf(f, "mld_connect_bssid_pref=" MACSTR "\n",
+			MAC2STR(config->mld_connect_bssid_pref));
+#endif /* CONFIG_TESTING_OPTIONS */
+	if (config->ft_prepend_pmkid)
+		fprintf(f, "ft_prepend_pmkid=%d\n", config->ft_prepend_pmkid);
+	if (config->dik) {
+		fprintf(f, "dik_cipher=%d\n", config->dik_cipher);
+		write_global_bin(f, "dik", config->dik);
+	}
+	if (config->wfa_gen_capa)
+		fprintf(f, "wfa_gen_capa=%d\n", config->wfa_gen_capa);
+	write_global_bin(f, "wfa_gen_capa_supp", config->wfa_gen_capa_supp);
+	if (config->disable_op_classes_80_80_mhz)
+		fprintf(f, "disable_op_classes_80_80_mhz=%d\n",
+			config->disable_op_classes_80_80_mhz);
+	if (config->pr_pasn_type)
+		fprintf(f, "pr_pasn_type=%d\n", config->pr_pasn_type);
+	if (config->pr_preferred_role)
+		fprintf(f, "pr_preferred_role=%d\n", config->pr_preferred_role);
+
+#ifdef CONFIG_PASN
+	if (config->pasn_groups) {
+		int i;
+
+		fprintf(f, "pasn_groups=");
+		for (i = 0; config->pasn_groups[i] > 0; i++) {
+			fprintf(f, "%s%d", i > 0 ? " " : "",
+				config->pasn_groups[i]);
+		}
+		fprintf(f, "\n");
+	}
+#endif /* CONFIG_PASN */
+}
+
+static void wpa_config_write_identity(FILE *f, struct wpa_dev_ik *dev_ik)
+{
+	fprintf(f, "\tdik_cipher=%d\n", dev_ik->dik_cipher);
+
+	if (dev_ik->dik)
+		write_global_bin(f, "\tdik", dev_ik->dik);
+
+	if (dev_ik->pmk)
+		write_global_bin(f, "\tpmk", dev_ik->pmk);
+
+	if (dev_ik->pmkid)
+		write_global_bin(f, "\tpmkid", dev_ik->pmkid);
 }
 
 #endif /* CONFIG_NO_CONFIG_WRITE */
@@ -1569,34 +1848,53 @@ int wpa_config_write(const char *name, struct wpa_config *config)
 	FILE *f;
 	struct wpa_ssid *ssid;
 	struct wpa_cred *cred;
+	struct wpa_dev_ik *dev_ik;
 #ifndef CONFIG_NO_CONFIG_BLOBS
 	struct wpa_config_blob *blob;
 #endif /* CONFIG_NO_CONFIG_BLOBS */
 	int ret = 0;
 	const char *orig_name = name;
-	int tmp_len;
+	size_t tmp_len, prefix_len, suffix_len;
 	char *tmp_name;
+	struct stat file_stat;
+	mode_t prev;
+	u8 suffix[8];
 
 	if (!name) {
 		wpa_printf(MSG_ERROR, "No configuration file for writing");
 		return -1;
 	}
 
-	tmp_len = os_strlen(name) + 5; /* allow space for .tmp suffix */
+	if (os_get_random(suffix, sizeof(suffix)) < 0)
+		return -1;
+
+	prefix_len = os_strlen(name) + 5;
+	suffix_len = 2 * sizeof(suffix);
+	tmp_len = prefix_len + suffix_len + 1;
 	tmp_name = os_malloc(tmp_len);
-	if (tmp_name) {
-		os_snprintf(tmp_name, tmp_len, "%s.tmp", name);
-		name = tmp_name;
-	}
+	if (!tmp_name)
+		return -1;
 
-	wpa_printf(MSG_DEBUG, "Writing configuration file '%s'", name);
+	os_snprintf(tmp_name, tmp_len, "%s.tmp-", name);
+	wpa_snprintf_hex(tmp_name + prefix_len, suffix_len + 1,
+			 suffix, sizeof(suffix));
+	name = tmp_name;
 
+	prev = umask(S_IRWXG | S_IRWXO);
 	f = fopen(name, "w");
+	umask(prev);
 	if (f == NULL) {
 		wpa_printf(MSG_DEBUG, "Failed to open '%s' for writing", name);
 		os_free(tmp_name);
 		return -1;
 	}
+
+	wpa_printf(MSG_DEBUG, "Writing configuration file '%s'", name);
+
+	if (stat(orig_name, &file_stat) == 0)
+		chmod(name,
+		      (file_stat.st_mode & (S_IRWXU | S_IRWXG | S_IRWXO)) |
+		      S_IRUSR | S_IWUSR);
 
 	wpa_config_write_global(f, config);
 
@@ -1609,16 +1907,24 @@ int wpa_config_write(const char *name, struct wpa_config *config)
 	}
 
 	for (ssid = config->ssid; ssid; ssid = ssid->next) {
-		if (ssid->key_mgmt == WPA_KEY_MGMT_WPS || ssid->temporary)
+		if (ssid->key_mgmt == WPA_KEY_MGMT_WPS || ssid->temporary ||
+		    ssid->ro)
 			continue; /* do not save temporary networks */
 		if (wpa_key_mgmt_wpa_psk_no_sae(ssid->key_mgmt) &&
 		    !ssid->psk_set && !ssid->passphrase)
 			continue; /* do not save invalid network */
 		if (wpa_key_mgmt_sae(ssid->key_mgmt) &&
-		    !ssid->passphrase && !ssid->sae_password)
+		    !ssid->passphrase && !ssid->sae_password &&
+		    !ssid->pmk_valid)
 			continue; /* do not save invalid network */
 		fprintf(f, "\nnetwork={\n");
-		wpa_config_write_network(f, ssid);
+		wpa_config_write_network(f, ssid, config);
+		fprintf(f, "}\n");
+	}
+
+	for (dev_ik = config->identity; dev_ik; dev_ik = dev_ik->next) {
+		fprintf(f, "\nidentity={\n");
+		wpa_config_write_identity(f, dev_ik);
 		fprintf(f, "}\n");
 	}
 
@@ -1634,18 +1940,16 @@ int wpa_config_write(const char *name, struct wpa_config *config)
 
 	fclose(f);
 
-	if (tmp_name) {
-		int chmod_ret = 0;
-
 #ifdef ANDROID
-		chmod_ret = chmod(tmp_name,
-				  S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
+	if (!ret)
+		ret = chmod(tmp_name, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
 #endif /* ANDROID */
-		if (chmod_ret != 0 || rename(tmp_name, orig_name) != 0)
-			ret = -1;
+	if (!ret)
+		ret = rename(tmp_name, orig_name);
+	if (ret)
+		unlink(tmp_name);
 
-		os_free(tmp_name);
-	}
+	os_free(tmp_name);
 
 	wpa_printf(MSG_DEBUG, "Configuration file '%s' written %ssuccessfully",
 		   orig_name, ret ? "un" : "");

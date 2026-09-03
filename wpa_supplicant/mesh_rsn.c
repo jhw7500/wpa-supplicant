@@ -118,7 +118,7 @@ static int auth_set_key(void *ctx, int vlan_id, enum wpa_alg alg,
 	}
 	wpa_hexdump_key(MSG_DEBUG, "AUTH: set_key - key", key, key_len);
 
-	return wpa_drv_set_key(mesh_rsn->wpa_s, alg, addr, idx,
+	return wpa_drv_set_key(mesh_rsn->wpa_s, -1, alg, addr, idx,
 			       1, seq, 6, key, key_len, key_flag);
 }
 
@@ -142,6 +142,23 @@ static int auth_start_ampe(void *ctx, const u8 *addr)
 }
 
 
+static int auth_for_each_sta(
+	void *ctx, int (*cb)(struct wpa_state_machine *sm, void *ctx),
+	void *cb_ctx)
+{
+	struct mesh_rsn *rsn = ctx;
+	struct hostapd_data *hapd;
+	struct sta_info *sta;
+
+	hapd = rsn->wpa_s->ifmsh->bss[0];
+	for (sta = hapd->sta_list; sta; sta = sta->next) {
+		if (sta->wpa_sm && cb(sta->wpa_sm, cb_ctx))
+			return 1;
+	}
+	return 0;
+}
+
+
 static int __mesh_rsn_auth_init(struct mesh_rsn *rsn, const u8 *addr,
 				enum mfp_options ieee80211w, int ocv)
 {
@@ -151,6 +168,7 @@ static int __mesh_rsn_auth_init(struct mesh_rsn *rsn, const u8 *addr,
 		.get_psk = auth_get_psk,
 		.set_key = auth_set_key,
 		.start_ampe = auth_start_ampe,
+		.for_each_sta = auth_for_each_sta,
 	};
 	u8 seq[6] = {};
 
@@ -194,7 +212,7 @@ static int __mesh_rsn_auth_init(struct mesh_rsn *rsn, const u8 *addr,
 		/* group mgmt */
 		wpa_hexdump_key(MSG_DEBUG, "mesh: Own TX IGTK",
 				rsn->igtk, rsn->igtk_len);
-		wpa_drv_set_key(rsn->wpa_s,
+		wpa_drv_set_key(rsn->wpa_s, -1,
 				wpa_cipher_to_alg(rsn->mgmt_group_cipher),
 				broadcast_ether_addr,
 				rsn->igtk_key_id, 1,
@@ -205,7 +223,7 @@ static int __mesh_rsn_auth_init(struct mesh_rsn *rsn, const u8 *addr,
 	/* group privacy / data frames */
 	wpa_hexdump_key(MSG_DEBUG, "mesh: Own TX MGTK",
 			rsn->mgtk, rsn->mgtk_len);
-	wpa_drv_set_key(rsn->wpa_s, wpa_cipher_to_alg(rsn->group_cipher),
+	wpa_drv_set_key(rsn->wpa_s, -1, wpa_cipher_to_alg(rsn->group_cipher),
 			broadcast_ether_addr,
 			rsn->mgtk_key_id, 1, seq, sizeof(seq),
 			rsn->mgtk, rsn->mgtk_len, KEY_FLAG_GROUP_TX_DEFAULT);
@@ -338,9 +356,10 @@ static int mesh_rsn_build_sae_commit(struct wpa_supplicant *wpa_s,
 	}
 
 	if (sta->sae->tmp && !sta->sae->tmp->pw_id && ssid->sae_password_id) {
-		sta->sae->tmp->pw_id = os_strdup(ssid->sae_password_id);
+		sta->sae->tmp->pw_id = (u8 *) os_strdup(ssid->sae_password_id);
 		if (!sta->sae->tmp->pw_id)
 			return -1;
+		sta->sae->tmp->pw_id_len = os_strlen(ssid->sae_password_id);
 	}
 	return sae_prepare_commit(wpa_s->own_addr, sta->addr,
 				  (u8 *) password, os_strlen(password),
@@ -386,7 +405,8 @@ int mesh_rsn_auth_sae_sta(struct wpa_supplicant *wpa_s,
 			   " - try to use PMKSA caching instead of new SAE authentication",
 			   MAC2STR(sta->addr));
 		wpa_auth_pmksa_set_to_sm(pmksa, sta->wpa_sm, hapd->wpa_auth,
-					 sta->sae->pmkid, sta->sae->pmk);
+					 sta->sae->pmkid, sta->sae->pmk,
+					 &sta->sae->pmk_len);
 		sae_accept_sta(hapd, sta);
 		sta->mesh_sae_pmksa_caching = 1;
 		return 0;
@@ -634,7 +654,9 @@ int mesh_rsn_process_ampe(struct wpa_supplicant *wpa_s, struct sta_info *sta,
 	u8 null_nonce[WPA_NONCE_LEN] = {};
 	u8 ampe_eid;
 	u8 ampe_ie_len;
-	u8 *ampe_buf, *crypt = NULL, *pos, *end;
+	u8 *ampe_buf, *plain, *pos, *end;
+	size_t plain_len;
+	const u8 *crypt;
 	size_t crypt_len;
 	const u8 *aad[] = { sta->addr, wpa_s->own_addr, cat };
 	const size_t aad_len[] = { ETH_ALEN, ETH_ALEN,
@@ -660,30 +682,22 @@ int mesh_rsn_process_ampe(struct wpa_supplicant *wpa_s, struct sta_info *sta,
 		return -1;
 	}
 
-	if (!elems->mic || elems->mic_len < AES_BLOCK_SIZE) {
+	if (!elems->mic || elems->mic_len != AES_BLOCK_SIZE) {
 		wpa_msg(wpa_s, MSG_DEBUG, "Mesh RSN: missing mic ie");
 		return -1;
 	}
 
-	ampe_buf = (u8 *) elems->mic + elems->mic_len;
-	if ((int) elems_len < ampe_buf - start)
-		return -1;
-
-	crypt_len = elems_len - (elems->mic - start);
+	crypt = elems->mic;
+	crypt_len = elems_len - (crypt - start);
 	if (crypt_len < 2 + AES_BLOCK_SIZE) {
 		wpa_msg(wpa_s, MSG_DEBUG, "Mesh RSN: missing ampe ie");
 		return -1;
 	}
 
-	/* crypt is modified by siv_decrypt */
-	crypt = os_zalloc(crypt_len);
-	if (!crypt) {
-		wpa_printf(MSG_ERROR, "Mesh RSN: out of memory");
-		ret = -ENOMEM;
-		goto free;
-	}
-
-	os_memcpy(crypt, elems->mic, crypt_len);
+	plain_len = crypt_len - AES_BLOCK_SIZE;
+	ampe_buf = plain = os_malloc(plain_len);
+	if (!plain)
+		return -ENOMEM;
 
 	if (aes_siv_decrypt(sta->aek, sizeof(sta->aek), crypt, crypt_len, 3,
 			    aad, aad_len, ampe_buf)) {
@@ -790,6 +804,6 @@ int mesh_rsn_process_ampe(struct wpa_supplicant *wpa_s, struct sta_info *sta,
 	}
 
 free:
-	os_free(crypt);
+	bin_clear_free(plain, plain_len);
 	return ret;
 }

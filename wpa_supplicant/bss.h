@@ -61,9 +61,6 @@ struct wpa_bss_anqp {
 	struct wpabuf *hs20_wan_metrics;
 	struct wpabuf *hs20_connection_capability;
 	struct wpabuf *hs20_operating_class;
-	struct wpabuf *hs20_osu_providers_list;
-	struct wpabuf *hs20_operator_icon_metadata;
-	struct wpabuf *hs20_osu_providers_nai_list;
 #endif /* CONFIG_HS20 */
 };
 
@@ -96,6 +93,8 @@ struct wpa_bss {
 	size_t ssid_len;
 	/** Frequency of the channel in MHz (e.g., 2412 = channel 1) */
 	int freq;
+	/** The max channel width supported by both the AP and the STA */
+	enum chan_width max_cw;
 	/** Beacon interval in TUs (host byte order) */
 	u16 beacon_int;
 	/** Capability information field in host byte order */
@@ -108,6 +107,8 @@ struct wpa_bss {
 	int level;
 	/** Timestamp of last Beacon/Probe Response frame */
 	u64 tsf;
+	/** Whether the Beacon frame data is known to be newer */
+	bool beacon_newer;
 	/** Time of the last update (i.e., Beacon or Probe Response RX) */
 	struct os_reltime last_update;
 	/** Estimated throughput in kbps */
@@ -120,6 +121,30 @@ struct wpa_bss {
 	size_t ie_len;
 	/** Length of the following Beacon IE field in octets */
 	size_t beacon_ie_len;
+	/** MLD address of the AP */
+	u8 mld_addr[ETH_ALEN];
+	/** Link ID of this affiliated AP of the AP MLD */
+	u8 mld_link_id;
+	/** For MLD, denotes whether the BSS is a non-transmitted one; useful
+	 * for ML probe */
+	bool mld_bss_non_transmitted;
+	/** MLD Capabilities And Operations */
+	u16 mld_capa;
+	/** Extended MLD Capabilities And Operations */
+	u16 ext_mld_capa;
+	/** EML Capabilities */
+	u16 eml_capa;
+
+	/** An array of MLD links, any link found in the RNR is "valid" */
+	u16 valid_links;
+	struct mld_link {
+		u8 bssid[ETH_ALEN];
+		int freq;
+
+		/* Whether the link is valid but currently disabled */
+		bool disabled;
+	} mld_links[MAX_NUM_MLD_LINKS];
+
 	/* followed by ie_len octets of IEs */
 	/* followed by beacon_ie_len octets of IEs */
 	u8 ies[];
@@ -146,6 +171,9 @@ void wpa_bss_flush(struct wpa_supplicant *wpa_s);
 void wpa_bss_flush_by_age(struct wpa_supplicant *wpa_s, int age);
 struct wpa_bss * wpa_bss_get(struct wpa_supplicant *wpa_s, const u8 *bssid,
 			     const u8 *ssid, size_t ssid_len);
+struct wpa_bss * wpa_bss_get_connection(struct wpa_supplicant *wpa_s,
+					const u8 *bssid,
+					const u8 *ssid, size_t ssid_len);
 struct wpa_bss * wpa_bss_get_bssid(struct wpa_supplicant *wpa_s,
 				   const u8 *bssid);
 struct wpa_bss * wpa_bss_get_bssid_latest(struct wpa_supplicant *wpa_s,
@@ -156,6 +184,7 @@ struct wpa_bss * wpa_bss_get_id(struct wpa_supplicant *wpa_s, unsigned int id);
 struct wpa_bss * wpa_bss_get_id_range(struct wpa_supplicant *wpa_s,
 				      unsigned int idf, unsigned int idl);
 const u8 * wpa_bss_get_ie(const struct wpa_bss *bss, u8 ie);
+const u8 * wpa_bss_get_ie_beacon(const struct wpa_bss *bss, u8 ie);
 const u8 * wpa_bss_get_ie_ext(const struct wpa_bss *bss, u8 ext);
 const u8 * wpa_bss_get_vendor_ie(const struct wpa_bss *bss, u32 vendor_type);
 const u8 * wpa_bss_get_vendor_ie_beacon(const struct wpa_bss *bss,
@@ -196,5 +225,19 @@ static inline void wpa_bss_update_level(struct wpa_bss *bss, int new_level)
 void calculate_update_time(const struct os_reltime *fetch_time,
 			   unsigned int age_ms,
 			   struct os_reltime *update_time);
+
+u16 wpa_bss_get_usable_links(struct wpa_supplicant *wpa_s, struct wpa_bss *bss,
+			     struct wpa_ssid *ssid, u16 *missing_links);
+void wpa_bss_parse_basic_ml_element(struct wpa_supplicant *wpa_s,
+				    struct wpa_bss *bss);
+u16 wpa_bss_parse_reconf_ml_element(struct wpa_supplicant *wpa_s,
+				    struct wpa_bss *bss);
+
+const u8 * wpa_bss_get_rsne(struct wpa_supplicant *wpa_s,
+			    const struct wpa_bss *bss, struct wpa_ssid *ssid,
+			    bool mlo);
+const u8 * wpa_bss_get_rsnxe(struct wpa_supplicant *wpa_s,
+			     const struct wpa_bss *bss, struct wpa_ssid *ssid,
+			     bool mlo);
 
 #endif /* BSS_H */

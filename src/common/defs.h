@@ -39,7 +39,6 @@
 #define WPA_KEY_MGMT_WAPI_PSK BIT(12)
 #define WPA_KEY_MGMT_WAPI_CERT BIT(13)
 #define WPA_KEY_MGMT_CCKM BIT(14)
-#define WPA_KEY_MGMT_OSEN BIT(15)
 #define WPA_KEY_MGMT_IEEE8021X_SUITE_B BIT(16)
 #define WPA_KEY_MGMT_IEEE8021X_SUITE_B_192 BIT(17)
 #define WPA_KEY_MGMT_FILS_SHA256 BIT(18)
@@ -50,12 +49,17 @@
 #define WPA_KEY_MGMT_DPP BIT(23)
 #define WPA_KEY_MGMT_FT_IEEE8021X_SHA384 BIT(24)
 #define WPA_KEY_MGMT_PASN BIT(25)
+#define WPA_KEY_MGMT_SAE_EXT_KEY BIT(26)
+#define WPA_KEY_MGMT_FT_SAE_EXT_KEY BIT(27)
+#define WPA_KEY_MGMT_IEEE8021X_SHA384 BIT(28)
+#define WPA_KEY_MGMT_EPPKE BIT(29)
 
 
 #define WPA_KEY_MGMT_FT (WPA_KEY_MGMT_FT_PSK | \
 			 WPA_KEY_MGMT_FT_IEEE8021X | \
 			 WPA_KEY_MGMT_FT_IEEE8021X_SHA384 | \
 			 WPA_KEY_MGMT_FT_SAE | \
+			 WPA_KEY_MGMT_FT_SAE_EXT_KEY | \
 			 WPA_KEY_MGMT_FT_FILS_SHA256 | \
 			 WPA_KEY_MGMT_FT_FILS_SHA384)
 
@@ -65,14 +69,14 @@ static inline int wpa_key_mgmt_wpa_ieee8021x(int akm)
 			 WPA_KEY_MGMT_FT_IEEE8021X |
 			 WPA_KEY_MGMT_FT_IEEE8021X_SHA384 |
 			 WPA_KEY_MGMT_CCKM |
-			 WPA_KEY_MGMT_OSEN |
 			 WPA_KEY_MGMT_IEEE8021X_SHA256 |
 			 WPA_KEY_MGMT_IEEE8021X_SUITE_B |
 			 WPA_KEY_MGMT_IEEE8021X_SUITE_B_192 |
 			 WPA_KEY_MGMT_FILS_SHA256 |
 			 WPA_KEY_MGMT_FILS_SHA384 |
 			 WPA_KEY_MGMT_FT_FILS_SHA256 |
-			 WPA_KEY_MGMT_FT_FILS_SHA384));
+			 WPA_KEY_MGMT_FT_FILS_SHA384 |
+			 WPA_KEY_MGMT_IEEE8021X_SHA384));
 }
 
 static inline int wpa_key_mgmt_wpa_psk_no_sae(int akm)
@@ -88,7 +92,9 @@ static inline int wpa_key_mgmt_wpa_psk(int akm)
 			 WPA_KEY_MGMT_FT_PSK |
 			 WPA_KEY_MGMT_PSK_SHA256 |
 			 WPA_KEY_MGMT_SAE |
-			 WPA_KEY_MGMT_FT_SAE));
+			 WPA_KEY_MGMT_SAE_EXT_KEY |
+			 WPA_KEY_MGMT_FT_SAE |
+			 WPA_KEY_MGMT_FT_SAE_EXT_KEY));
 }
 
 static inline int wpa_key_mgmt_ft(int akm)
@@ -111,7 +117,31 @@ static inline int wpa_key_mgmt_ft_psk(int akm)
 static inline int wpa_key_mgmt_sae(int akm)
 {
 	return !!(akm & (WPA_KEY_MGMT_SAE |
-			 WPA_KEY_MGMT_FT_SAE));
+			 WPA_KEY_MGMT_SAE_EXT_KEY |
+			 WPA_KEY_MGMT_FT_SAE |
+			 WPA_KEY_MGMT_FT_SAE_EXT_KEY));
+}
+
+static inline int wpa_key_mgmt_sae_ext_key(int akm)
+{
+	return !!(akm & (WPA_KEY_MGMT_SAE_EXT_KEY |
+			 WPA_KEY_MGMT_FT_SAE_EXT_KEY));
+}
+
+static inline int wpa_key_mgmt_only_sae(int akm)
+{
+	return wpa_key_mgmt_sae(akm) &&
+		!(akm & ~(WPA_KEY_MGMT_SAE |
+			  WPA_KEY_MGMT_SAE_EXT_KEY |
+			  WPA_KEY_MGMT_FT_SAE |
+			  WPA_KEY_MGMT_FT_SAE_EXT_KEY));
+}
+
+static inline int wpa_key_mgmt_only_sae_ext_key(int akm)
+{
+	return wpa_key_mgmt_sae_ext_key(akm) &&
+		!(akm & ~(WPA_KEY_MGMT_SAE_EXT_KEY |
+			  WPA_KEY_MGMT_FT_SAE_EXT_KEY));
 }
 
 static inline int wpa_key_mgmt_fils(int akm)
@@ -124,11 +154,11 @@ static inline int wpa_key_mgmt_fils(int akm)
 
 static inline int wpa_key_mgmt_sha256(int akm)
 {
-	return !!(akm & (WPA_KEY_MGMT_PSK_SHA256 |
+	return !!(akm & (WPA_KEY_MGMT_FT_IEEE8021X |
+			 WPA_KEY_MGMT_PSK_SHA256 |
 			 WPA_KEY_MGMT_IEEE8021X_SHA256 |
 			 WPA_KEY_MGMT_SAE |
 			 WPA_KEY_MGMT_FT_SAE |
-			 WPA_KEY_MGMT_OSEN |
 			 WPA_KEY_MGMT_IEEE8021X_SUITE_B |
 			 WPA_KEY_MGMT_FILS_SHA256 |
 			 WPA_KEY_MGMT_FT_FILS_SHA256));
@@ -139,7 +169,8 @@ static inline int wpa_key_mgmt_sha384(int akm)
 	return !!(akm & (WPA_KEY_MGMT_IEEE8021X_SUITE_B_192 |
 			 WPA_KEY_MGMT_FT_IEEE8021X_SHA384 |
 			 WPA_KEY_MGMT_FILS_SHA384 |
-			 WPA_KEY_MGMT_FT_FILS_SHA384));
+			 WPA_KEY_MGMT_FT_FILS_SHA384 |
+			 WPA_KEY_MGMT_IEEE8021X_SHA384));
 }
 
 static inline int wpa_key_mgmt_suite_b(int akm)
@@ -155,7 +186,8 @@ static inline int wpa_key_mgmt_wpa(int akm)
 		wpa_key_mgmt_fils(akm) ||
 		wpa_key_mgmt_sae(akm) ||
 		akm == WPA_KEY_MGMT_OWE ||
-		akm == WPA_KEY_MGMT_DPP;
+		akm == WPA_KEY_MGMT_DPP ||
+		akm == WPA_KEY_MGMT_EPPKE;
 }
 
 static inline int wpa_key_mgmt_wpa_any(int akm)
@@ -168,11 +200,35 @@ static inline int wpa_key_mgmt_cckm(int akm)
 	return akm == WPA_KEY_MGMT_CCKM;
 }
 
+static inline int wpa_key_mgmt_cross_akm(int akm)
+{
+	return !!(akm & (WPA_KEY_MGMT_PSK |
+			 WPA_KEY_MGMT_PSK_SHA256 |
+			 WPA_KEY_MGMT_SAE |
+			 WPA_KEY_MGMT_SAE_EXT_KEY));
+}
+
+static inline bool wpa_key_mgmt_eppke(int akm)
+{
+	return !!(akm & WPA_KEY_MGMT_EPPKE);
+}
+
+static inline int wpa_key_mgmt_enhanced_open(int akm)
+{
+	return !!(akm & (WPA_KEY_MGMT_OWE |
+			 WPA_KEY_MGMT_EPPKE));
+}
+
+static inline int wpa_key_mgmt_only_enhanced_open(int akm)
+{
+	return wpa_key_mgmt_enhanced_open(akm) &&
+		!(akm & ~(WPA_KEY_MGMT_OWE |
+			  WPA_KEY_MGMT_EPPKE));
+}
 
 #define WPA_PROTO_WPA BIT(0)
 #define WPA_PROTO_RSN BIT(1)
 #define WPA_PROTO_WAPI BIT(2)
-#define WPA_PROTO_OSEN BIT(3)
 
 #define WPA_AUTH_ALG_OPEN BIT(0)
 #define WPA_AUTH_ALG_SHARED BIT(1)
@@ -181,10 +237,17 @@ static inline int wpa_key_mgmt_cckm(int akm)
 #define WPA_AUTH_ALG_SAE BIT(4)
 #define WPA_AUTH_ALG_FILS BIT(5)
 #define WPA_AUTH_ALG_FILS_SK_PFS BIT(6)
+#define WPA_AUTH_ALG_EPPKE BIT(7)
+#define WPA_AUTH_ALG_802_1X BIT(8)
 
 static inline int wpa_auth_alg_fils(int alg)
 {
 	return !!(alg & (WPA_AUTH_ALG_FILS | WPA_AUTH_ALG_FILS_SK_PFS));
+}
+
+static inline bool wpa_auth_alg_eppke(int alg)
+{
+	return !!(alg & WPA_AUTH_ALG_EPPKE);
 }
 
 enum wpa_alg {
@@ -429,7 +492,24 @@ enum chan_width {
 	CHAN_WIDTH_4320,
 	CHAN_WIDTH_6480,
 	CHAN_WIDTH_8640,
+	CHAN_WIDTH_320,
 	CHAN_WIDTH_UNKNOWN
+};
+
+/* VHT/EDMG/etc. channel widths
+ * Note: The first four values are used in hostapd.conf and as such, must
+ * maintain their defined values. Other values are used internally. */
+enum oper_chan_width {
+	CONF_OPER_CHWIDTH_USE_HT = 0,
+	CONF_OPER_CHWIDTH_80MHZ = 1,
+	CONF_OPER_CHWIDTH_160MHZ = 2,
+	CONF_OPER_CHWIDTH_80P80MHZ = 3,
+	CONF_OPER_CHWIDTH_2160MHZ,
+	CONF_OPER_CHWIDTH_4320MHZ,
+	CONF_OPER_CHWIDTH_6480MHZ,
+	CONF_OPER_CHWIDTH_8640MHZ,
+	CONF_OPER_CHWIDTH_40MHZ_6GHZ,
+	CONF_OPER_CHWIDTH_320MHZ,
 };
 
 enum key_flag {
@@ -440,6 +520,7 @@ enum key_flag {
 	KEY_FLAG_GROUP			= BIT(4),
 	KEY_FLAG_PAIRWISE		= BIT(5),
 	KEY_FLAG_PMK			= BIT(6),
+	KEY_FLAG_NEXT			= BIT(7),
 	/* Used flag combinations */
 	KEY_FLAG_RX_TX			= KEY_FLAG_RX | KEY_FLAG_TX,
 	KEY_FLAG_GROUP_RX_TX		= KEY_FLAG_GROUP | KEY_FLAG_RX_TX,
@@ -452,8 +533,10 @@ enum key_flag {
 	KEY_FLAG_PAIRWISE_RX		= KEY_FLAG_PAIRWISE | KEY_FLAG_RX,
 	KEY_FLAG_PAIRWISE_RX_TX_MODIFY	= KEY_FLAG_PAIRWISE_RX_TX |
 					  KEY_FLAG_MODIFY,
+	KEY_FLAG_PAIRWISE_NEXT		= KEY_FLAG_PAIRWISE_RX | KEY_FLAG_NEXT,
 	/* Max allowed flags for each key type */
-	KEY_FLAG_PAIRWISE_MASK		= KEY_FLAG_PAIRWISE_RX_TX_MODIFY,
+	KEY_FLAG_PAIRWISE_MASK		= KEY_FLAG_PAIRWISE_RX_TX_MODIFY |
+					  KEY_FLAG_NEXT,
 	KEY_FLAG_GROUP_MASK		= KEY_FLAG_GROUP_RX_TX_DEFAULT,
 	KEY_FLAG_PMK_MASK		= KEY_FLAG_PMK,
 };
@@ -474,5 +557,32 @@ enum ptk0_rekey_handling {
 	PTK0_REKEY_ALLOW_LOCAL_OK,
 	PTK0_REKEY_ALLOW_NEVER
 };
+
+enum frame_encryption {
+	FRAME_ENCRYPTION_UNKNOWN = -1,
+	FRAME_NOT_ENCRYPTED = 0,
+	FRAME_ENCRYPTED = 1
+};
+
+#define MAX_NUM_MLD_LINKS 15
+
+enum sae_pwe {
+	SAE_PWE_HUNT_AND_PECK = 0,
+	SAE_PWE_HASH_TO_ELEMENT = 1,
+	SAE_PWE_BOTH = 2,
+	SAE_PWE_FORCE_HUNT_AND_PECK = 3,
+	SAE_PWE_NOT_SET = 4,
+};
+
+enum wpa_p2p_mode {
+	WPA_P2P_MODE_WFD_R1	= 0,
+	WPA_P2P_MODE_WFD_R2	= 1,
+	WPA_P2P_MODE_WFD_PCC	= 2,
+};
+
+#define USEC_80211_TU 1024
+
+#define USEC_TO_TU(m) ((m) / USEC_80211_TU)
+#define TU_TO_USEC(m) ((m) * USEC_80211_TU)
 
 #endif /* DEFS_H */

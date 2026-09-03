@@ -325,6 +325,9 @@ bsd_set_key(void *priv, struct wpa_driver_set_key_params *params)
 	const u8 *key = params->key;
 	size_t key_len = params->key_len;
 
+	if (params->key_flag & KEY_FLAG_NEXT)
+		return -1;
+
 	wpa_printf(MSG_DEBUG, "%s: alg=%d addr=%p key_idx=%d set_tx=%d "
 		   "seq_len=%zu key_len=%zu", __func__, alg, addr, key_idx,
 		   set_tx, seq_len, key_len);
@@ -553,12 +556,12 @@ bsd_new_sta(void *priv, void *ctx, u8 addr[IEEE80211_ADDR_LEN])
 		ielen += 2;
 
 no_ie:
-	drv_event_assoc(ctx, addr, iebuf, ielen, 0);
+	drv_event_assoc(ctx, addr, iebuf, ielen, NULL, 0, NULL, -1, 0);
 }
 
 static int
 bsd_send_eapol(void *priv, const u8 *addr, const u8 *data, size_t data_len,
-	       int encrypt, const u8 *own_addr, u32 flags)
+	       int encrypt, const u8 *own_addr, u32 flags, int link_id)
 {
 	struct bsd_driver_data *drv = priv;
 
@@ -882,7 +885,7 @@ bsd_wireless_event_receive(int sock, void *ctx, void *sock_ctx)
 #undef WPA_OUI_TYPE
 
 static int bsd_sta_deauth(void *priv, const u8 *own_addr, const u8 *addr,
-			  u16 reason_code);
+			  u16 reason_code, int link_id);
 
 static const char *
 ether_sprintf(const u8 *addr)
@@ -906,7 +909,7 @@ bsd_set_privacy(void *priv, int enabled)
 
 static int
 bsd_get_seqnum(const char *ifname, void *priv, const u8 *addr, int idx,
-	       u8 *seq)
+	       int link_id, u8 *seq)
 {
 	struct ieee80211req_key wk;
 
@@ -946,12 +949,13 @@ bsd_get_seqnum(const char *ifname, void *priv, const u8 *addr, int idx,
 
 
 static int
-bsd_flush(void *priv)
+bsd_flush(void *priv, int link_id)
 {
 	u8 allsta[IEEE80211_ADDR_LEN];
 
 	memset(allsta, 0xff, IEEE80211_ADDR_LEN);
-	return bsd_sta_deauth(priv, NULL, allsta, IEEE80211_REASON_AUTH_LEAVE);
+	return bsd_sta_deauth(priv, NULL, allsta, IEEE80211_REASON_AUTH_LEAVE,
+			      -1);
 }
 
 
@@ -974,7 +978,8 @@ bsd_read_sta_driver_data(void *priv, struct hostap_sta_driver_data *data,
 }
 
 static int
-bsd_sta_deauth(void *priv, const u8 *own_addr, const u8 *addr, u16 reason_code)
+bsd_sta_deauth(void *priv, const u8 *own_addr, const u8 *addr, u16 reason_code,
+	       int link_id)
 {
 	return bsd_send_mlme_param(priv, IEEE80211_MLME_DEAUTH, reason_code,
 				   addr);
@@ -982,7 +987,7 @@ bsd_sta_deauth(void *priv, const u8 *own_addr, const u8 *addr, u16 reason_code)
 
 static int
 bsd_sta_disassoc(void *priv, const u8 *own_addr, const u8 *addr,
-		 u16 reason_code)
+		 u16 reason_code, int link_id)
 {
 	return bsd_send_mlme_param(priv, IEEE80211_MLME_DISASSOC, reason_code,
 				   addr);
@@ -1556,7 +1561,8 @@ get80211opmode(struct bsd_driver_data *drv)
 }
 
 static void *
-wpa_driver_bsd_init(void *ctx, const char *ifname, void *priv)
+wpa_driver_bsd_init(void *ctx, const char *ifname, void *priv,
+		    enum wpa_p2p_mode p2p_mode)
 {
 #define	GETPARAM(drv, param, v) \
 	(((v) = get80211param(drv, param)) != -1)
@@ -1678,9 +1684,22 @@ bsd_global_init(void *ctx)
 
 	global->sock = socket(PF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
 	if (global->sock < 0) {
-		wpa_printf(MSG_ERROR, "socket[PF_INET,SOCK_DGRAM]: %s",
-			   strerror(errno));
-		goto fail1;
+		if (errno == EAFNOSUPPORT) {
+			wpa_printf(MSG_DEBUG,
+				   "INET not supported, trying INET6...");
+			global->sock = socket(PF_INET6,
+					      SOCK_DGRAM | SOCK_CLOEXEC, 0);
+			if (global->sock < 0) {
+				wpa_printf(MSG_ERROR,
+					   "socket[PF_INET6,SOCK_DGRAM]: %s",
+					   strerror(errno));
+				goto fail1;
+			}
+		} else {
+			wpa_printf(MSG_ERROR, "socket[PF_INET,SOCK_DGRAM]: %s",
+				   strerror(errno));
+			goto fail1;
+		}
 	}
 
 	global->route = socket(PF_ROUTE,

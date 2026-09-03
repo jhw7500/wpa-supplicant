@@ -62,7 +62,7 @@ static struct wps_er_sta * wps_er_sta_get(struct wps_er_ap *ap, const u8 *addr,
 	struct wps_er_sta *sta;
 	dl_list_for_each(sta, &ap->sta, struct wps_er_sta, list) {
 		if ((addr == NULL ||
-		     os_memcmp(sta->addr, addr, ETH_ALEN) == 0) &&
+		     ether_addr_equal(sta->addr, addr)) &&
 		    (uuid == NULL ||
 		     os_memcmp(uuid, sta->uuid, WPS_UUID_LEN) == 0))
 			return sta;
@@ -106,7 +106,7 @@ static struct wps_er_ap * wps_er_ap_get(struct wps_er *er,
 		    (uuid == NULL ||
 		     os_memcmp(uuid, ap->uuid, WPS_UUID_LEN) == 0) &&
 		    (mac_addr == NULL ||
-		     os_memcmp(mac_addr, ap->mac_addr, ETH_ALEN) == 0))
+		     ether_addr_equal(mac_addr, ap->mac_addr)))
 			return ap;
 	}
 	return NULL;
@@ -1195,11 +1195,14 @@ static void wps_er_http_notify(struct wps_er *er, struct http_request *req)
 		if (event_id != er->event_id) {
 			wpa_printf(MSG_DEBUG, "WPS ER: HTTP event for an "
 				   "unknown event id %u", event_id);
+			http_request_deinit(req);
 			return;
 		}
 		pos = os_strchr(uri + 7, '/');
-		if (pos == NULL)
+		if (!pos) {
+			http_request_deinit(req);
 			return;
+		}
 		pos++;
 		wps_er_http_event(er, req, atoi(pos));
 	} else {
