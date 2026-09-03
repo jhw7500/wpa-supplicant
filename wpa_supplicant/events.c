@@ -1824,13 +1824,16 @@ static bool wpas_ssid_in_config(struct wpa_supplicant *wpa_s, const u8 *ssid,
 {
 	struct wpa_ssid *s;
 
-	if (!ssid_len)
-		return false;
-
 	for (s = wpa_s->conf->ssid; s; s = s->next) {
 		if (wpas_network_disabled(wpa_s, s))
 			continue;
-		if (s->ssid_len == ssid_len &&
+		/* A wildcard block can associate with any SSID, so with one
+		 * enabled every BSS counts as ours - otherwise the summary
+		 * would fall silent on exactly the configuration that has no
+		 * named network to match against. */
+		if (!s->ssid_len)
+			return true;
+		if (ssid_len && s->ssid_len == ssid_len &&
 		    os_memcmp(s->ssid, ssid, ssid_len) == 0)
 			return true;
 	}
