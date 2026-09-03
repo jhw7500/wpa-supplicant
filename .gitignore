@@ -6,3 +6,7 @@ build/
 .bkit/
 .omc/
 .context/
+
+# 세션 인계 문서. 로컬 작업 컨텍스트라 저장소에 싣지 않는다.
+# 슬래시 없는 패턴이라 하위 경로의 HANDOFF-*.md 도 함께 잡는다 (wlan-package 와 동일 관례).
+HANDOFF*.md
