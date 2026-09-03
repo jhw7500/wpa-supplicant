@@ -5024,6 +5024,11 @@ static const char * wpa_config_json_skip_str(const char *pos, const char *end)
 	pos++;
 	while (pos < end) {
 		if (*pos == '\\') {
+			/* An escape needs the character after it. Bail out
+			 * rather than step past end - computing more than one
+			 * past the buffer is not defined, even unread. */
+			if (end - pos < 2)
+				return NULL;
 			pos += 2;
 			continue;
 		}
