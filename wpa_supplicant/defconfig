@@ -525,7 +525,11 @@ CONFIG_HS20=y
 #CONFIG_MATCH_IFACE=y
 
 # Disable roaming in wpa_supplicant
-CONFIG_NO_ROAMING=y
+# jhw: 업스트림 기본값(주석)으로 되돌린다. 네이티브 로밍 사용 여부는 빌드가 아니라
+# 런타임 설정이 정한다 - wifi_init_conf.json 의 <iface>.roaming.enabled 와
+# wpa_supplicant.conf 의 bgscan= 이 결정자다. 빌드에서 끄면 그 설정들이
+# 받아들여지고도 동작하지 않는다.
+#CONFIG_NO_ROAMING=y
 
 # AP mode operations with wpa_supplicant
 # This can be used for controlling AP mode operations with wpa_supplicant. It
