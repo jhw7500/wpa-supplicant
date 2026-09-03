@@ -5039,6 +5039,9 @@ wpa_config_json_find_iface(struct json_token *node, const char *ifname,
 				*name_match = tok;
 		}
 
+		/* Recursion is bounded by the parser: json.c refuses a tree
+		 * deeper than JSON_MAX_DEPTH while building it, so anything
+		 * reaching here nests at most that far. */
 		found = wpa_config_json_find_iface(tok, ifname, name_match);
 		if (found)
 			return found;
@@ -5064,10 +5067,18 @@ static int wpa_config_json_int(const struct json_token *tok, int *out)
 	}
 
 	if (tok->type == JSON_DOUBLE) {
-		if (tok->dnumber < (double) INT_MIN ||
-		    tok->dnumber > (double) INT_MAX)
+		double d = tok->dnumber;
+
+		/* The bound is far outside the accepted range on purpose: a
+		 * value like 70.5 has to survive to the range check so that it
+		 * gets the "outside -100..0" diagnostic. Written as a negated
+		 * comparison so that NaN is refused too. */
+		if (!(d > -1000000.0 && d < 1000000.0))
 			return 0;
-		*out = (int) tok->dnumber;
+		/* Round rather than truncate. bss->level is whole dBm, and
+		 * truncation toward zero would quietly turn -70.6 into the
+		 * stricter -70. */
+		*out = (int) (d < 0 ? d - 0.5 : d + 0.5);
 		return 1;
 	}
 
