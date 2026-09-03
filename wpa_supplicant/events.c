@@ -1729,6 +1729,28 @@ struct wpa_ssid * wpa_scan_res_match(struct wpa_supplicant *wpa_s,
 		return NULL;
 	}
 
+	/* jhw: connect_threshold - gate selection, not the BSS table. The
+	 * entry stays visible in scan results so that a weak-signal
+	 * environment can be told apart from a misconfigured threshold.
+	 *
+	 * Two exemptions. The BSS currently in use: this is a threshold for
+	 * connecting, not for staying connected, and it is what keeps a BTM
+	 * request from being accepted merely because the current link has
+	 * weakened. And link evaluation (link == true), which composes the
+	 * links of an AP MLD that has already been selected: gating there
+	 * would drop a weak affiliated link without recording it as missing,
+	 * so nothing would ever scan for it again.
+	 */
+	if (!link && wpa_s->conf->connect_threshold != 0 &&
+	    bss->level < wpa_s->conf->connect_threshold &&
+	    bss != wpa_s->current_bss) {
+		if (debug_print)
+			wpa_dbg(wpa_s, MSG_DEBUG,
+				"   skip - level %d < connect_threshold %d",
+				bss->level, wpa_s->conf->connect_threshold);
+		return NULL;
+	}
+
 	for (ssid = group; ssid; ssid = only_first_ssid ? NULL : ssid->pnext) {
 		if (wpa_scan_res_ok(wpa_s, ssid, match_ssid, match_ssid_len,
 				    bss, bssid_ignore_count, debug_print, link))
@@ -1795,6 +1817,28 @@ wpa_supplicant_select_bss(struct wpa_supplicant *wpa_s,
 }
 
 
+/* jhw: Is this SSID one of ours? Used only to keep the connect_threshold
+ * summary below from counting APs we would never have connected to anyway. */
+static bool wpas_ssid_in_config(struct wpa_supplicant *wpa_s, const u8 *ssid,
+				size_t ssid_len)
+{
+	struct wpa_ssid *s;
+
+	if (!ssid_len)
+		return false;
+
+	for (s = wpa_s->conf->ssid; s; s = s->next) {
+		if (wpas_network_disabled(wpa_s, s))
+			continue;
+		if (s->ssid_len == ssid_len &&
+		    os_memcmp(s->ssid, ssid, ssid_len) == 0)
+			return true;
+	}
+
+	return false;
+}
+
+
 struct wpa_bss * wpa_supplicant_pick_network(struct wpa_supplicant *wpa_s,
 					     struct wpa_ssid **selected_ssid,
 					     bool clear_ignorelist)
@@ -1844,6 +1888,34 @@ struct wpa_bss * wpa_supplicant_pick_network(struct wpa_supplicant *wpa_s,
 			wpa_s->bssid_ignore_cleared = true;
 		} else if (selected == NULL)
 			break;
+	}
+
+	/* jhw: connect_threshold - if nothing could be selected, say how many
+	 * of our own APs the threshold gated. This is the line that separates
+	 * "no AP in range" from "isolated by configuration", so it counts only
+	 * BSSes advertising an SSID we are configured for; counting the whole
+	 * scan would blame the threshold for every neighbourhood AP. Repeated
+	 * at most every tenth failed selection, since selection retries on the
+	 * scan interval for as long as the device stays offline. */
+	if (!selected && wpa_s->conf->connect_threshold != 0 &&
+	    wpa_s->no_suitable_network % 10 == 0) {
+		size_t i, below = 0, ours = 0;
+
+		for (i = 0; i < wpa_s->last_scan_res_used; i++) {
+			struct wpa_bss *bss = wpa_s->last_scan_res[i];
+
+			if (!wpas_ssid_in_config(wpa_s, bss->ssid,
+						 bss->ssid_len))
+				continue;
+			ours++;
+			if (bss->level < wpa_s->conf->connect_threshold)
+				below++;
+		}
+		if (below)
+			wpa_msg(wpa_s, MSG_INFO,
+				"No BSS selected; %u of %u BSSes for a configured network are below connect_threshold %d (SET connect_threshold 0 lifts the filter without a restart)",
+				(unsigned int) below, (unsigned int) ours,
+				wpa_s->conf->connect_threshold);
 	}
 
 	ssid = *selected_ssid;

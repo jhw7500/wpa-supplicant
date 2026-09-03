@@ -48,6 +48,14 @@
 #define DEFAULT_EXTENDED_KEY_ID 0
 #define DEFAULT_SCAN_RES_VALID_FOR_CONNECT 5
 #define DEFAULT_CONNECT_THRESHOLD	-100		//jhw
+/* jhw: accepted range for connect_threshold, matching the INT_RANGE of
+ * filter_rssi, the upstream global field of the same shape. RSSI is
+ * negative, so a positive value would gate every BSS; 0 disables the
+ * filter. */
+#define CONNECT_THRESHOLD_MIN		-100		//jhw
+#define CONNECT_THRESHOLD_MAX		0		//jhw
+/* Accepted, but reported: above this, most APs become unselectable. */
+#define CONNECT_THRESHOLD_LOOSE		-30		//jhw
 #define DEFAULT_MLD_CONNECT_BAND_PREF MLD_CONNECT_BAND_PREF_AUTO
 
 #include "config_ssid.h"

@@ -14,6 +14,12 @@ endif
 
 include $(LOCAL_PATH)/android.config
 
+# jhw: config.c reads the per-interface init file with the RFC7159 parser in
+# src/utils/json.c, so json.o (and the base64 helpers it links against) is
+# needed regardless of CONFIG_DPP. Set here, before the first ifdef NEED_*.
+NEED_JSON=y
+NEED_BASE64=y
+
 # To ignore possible wrong network configurations
 L_CFLAGS = -DWPA_IGNORE_CONFIG_ERRORS
 

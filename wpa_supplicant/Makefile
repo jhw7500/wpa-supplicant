@@ -12,6 +12,12 @@ EXTRA_TARGETS=dynamic_eap_methods
 CONFIG_FILE=.config
 include ../src/build.rules
 
+# jhw: config.c reads the per-interface init file with the RFC7159 parser in
+# src/utils/json.c, so json.o (and the base64 helpers it links against) is
+# needed regardless of CONFIG_DPP. Set here, before the first ifdef NEED_*.
+NEED_JSON=y
+NEED_BASE64=y
+
 ifdef CONFIG_BUILD_PASN_SO
 # add the dependency this way to allow CONFIG_BUILD_PASN_SO
 # being set in the config which is read by build.rules
