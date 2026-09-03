@@ -188,6 +188,7 @@ struct eapol_ctx {
 	 */
 	void (*aborted_cached)(void *ctx);
 
+#ifndef CONFIG_OPENSC_ENGINE_PATH
 	/**
 	 * opensc_engine_path - Path to the OpenSSL engine for opensc
 	 *
@@ -195,7 +196,9 @@ struct eapol_ctx {
 	 * engine (engine_opensc.so); if %NULL, this engine is not loaded.
 	 */
 	const char *opensc_engine_path;
+#endif /* CONFIG_OPENSC_ENGINE_PATH */
 
+#ifndef CONFIG_PKCS11_ENGINE_PATH
 	/**
 	 * pkcs11_engine_path - Path to the OpenSSL engine for PKCS#11
 	 *
@@ -203,7 +206,9 @@ struct eapol_ctx {
 	 * engine (engine_pkcs11.so); if %NULL, this engine is not loaded.
 	 */
 	const char *pkcs11_engine_path;
+#endif /* CONFIG_PKCS11_ENGINE_PATH */
 
+#ifndef CONFIG_PKCS11_MODULE_PATH
 	/**
 	 * pkcs11_module_path - Path to the OpenSSL OpenSC/PKCS#11 module
 	 *
@@ -212,6 +217,7 @@ struct eapol_ctx {
 	 * module is not loaded.
 	 */
 	const char *pkcs11_module_path;
+#endif /* CONFIG_PKCS11_MODULE_PATH */
 
 	/**
 	 * openssl_ciphers - OpenSSL cipher string
@@ -307,6 +313,13 @@ struct eapol_ctx {
 	 * Automatically triggers a reconnect when not.
 	 */
 	int (*confirm_auth_cb)(void *ctx);
+
+	/**
+	 * encryption_required - Check whether encryption is required
+	 * @ctx: eapol_ctx from eap_peer_sm_init() call
+	 * Returns: Whether the current session requires encryption
+	 */
+	bool (*encryption_required)(void *ctx);
 };
 
 
@@ -323,7 +336,7 @@ int eapol_sm_get_mib(struct eapol_sm *sm, char *buf, size_t buflen);
 void eapol_sm_configure(struct eapol_sm *sm, int heldPeriod, int authPeriod,
 			int startPeriod, int maxStart);
 int eapol_sm_rx_eapol(struct eapol_sm *sm, const u8 *src, const u8 *buf,
-		      size_t len);
+		      size_t len, enum frame_encryption encrypted);
 void eapol_sm_notify_tx_eapol_key(struct eapol_sm *sm);
 void eapol_sm_notify_portEnabled(struct eapol_sm *sm, bool enabled);
 void eapol_sm_notify_portValid(struct eapol_sm *sm, bool valid);
@@ -360,6 +373,11 @@ int eapol_sm_get_erp_info(struct eapol_sm *sm, struct eap_peer_config *config,
 			  const u8 **realm, size_t *realm_len,
 			  u16 *erp_next_seq_num, const u8 **rrk,
 			  size_t *rrk_len);
+void eapol_sm_set_eap_over_auth_frame(struct eapol_sm *sm, bool active);
+bool eapol_sm_get_eap_over_auth_frame(struct eapol_sm *sm);
+struct wpabuf * eapol_sm_get_eapol_pdu(struct eapol_sm *sm, uint8_t type);
+bool eapol_sm_get_success(struct eapol_sm *sm);
+bool eapol_sm_get_failure(struct eapol_sm *sm);
 
 #else /* IEEE8021X_EAPOL */
 static inline struct eapol_sm *eapol_sm_init(struct eapol_ctx *ctx)
@@ -389,7 +407,8 @@ static inline void eapol_sm_configure(struct eapol_sm *sm, int heldPeriod,
 {
 }
 static inline int eapol_sm_rx_eapol(struct eapol_sm *sm, const u8 *src,
-				    const u8 *buf, size_t len)
+				    const u8 *buf, size_t len,
+				    enum frame_encryption encrypted)
 {
 	return 0;
 }

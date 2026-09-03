@@ -119,7 +119,12 @@ static void set_sta_weights(struct hostapd_data *hapd, unsigned int weight)
 
 static unsigned int get_airtime_quantum(unsigned int max_wt)
 {
-	unsigned int quantum = AIRTIME_QUANTUM_TARGET / max_wt;
+	unsigned int quantum;
+
+	if (max_wt == 0)
+		return AIRTIME_QUANTUM_MAX;
+
+	quantum = AIRTIME_QUANTUM_TARGET / max_wt;
 
 	if (quantum < AIRTIME_QUANTUM_MIN)
 		quantum = AIRTIME_QUANTUM_MIN;
@@ -232,7 +237,7 @@ static int get_weight_for_sta(struct hostapd_data *hapd, const u8 *sta)
 	struct airtime_sta_weight *wt;
 
 	wt = hapd->conf->airtime_weight_list;
-	while (wt && os_memcmp(wt->addr, sta, ETH_ALEN) != 0)
+	while (wt && !ether_addr_equal(wt->addr, sta))
 		wt = wt->next;
 
 	return wt ? wt->weight : hapd->conf->airtime_weight;

@@ -47,7 +47,7 @@
 #define DEFAULT_MAX_OPER_CHWIDTH -1
 
 /* Consider global sae_pwe for SAE mechanism for PWE derivation */
-#define DEFAULT_SAE_PWE 4
+#define DEFAULT_SAE_PWE SAE_PWE_NOT_SET
 
 struct psk_list_entry {
 	struct dl_list list;
@@ -69,6 +69,28 @@ enum sae_pk_mode {
 	SAE_PK_MODE_AUTOMATIC = 0,
 	SAE_PK_MODE_ONLY = 1,
 	SAE_PK_MODE_DISABLED = 2,
+};
+
+enum wpas_mac_addr_style {
+	WPAS_MAC_ADDR_STYLE_NOT_SET = -1,
+	WPAS_MAC_ADDR_STYLE_PERMANENT = 0,
+	WPAS_MAC_ADDR_STYLE_RANDOM = 1,
+	WPAS_MAC_ADDR_STYLE_RANDOM_SAME_OUI = 2,
+	WPAS_MAC_ADDR_STYLE_DEDICATED_PER_ESS = 3,
+};
+
+/**
+ * rsn_overriding - RSN overriding
+ *
+ * 0 = Disabled
+ * 1 = Enabled automatically if the driver indicates support
+ * 2 = Forced to be enabled even without driver capability indication
+ */
+enum wpas_rsn_overriding {
+	RSN_OVERRIDING_NOT_SET = -1,
+	RSN_OVERRIDING_DISABLED = 0,
+	RSN_OVERRIDING_AUTO = 1,
+	RSN_OVERRIDING_ENABLED = 2,
 };
 
 /**
@@ -106,6 +128,21 @@ struct wpa_ssid {
 	 * file or when a new network is added through the control interface.
 	 */
 	int id;
+
+	/**
+	 * ro - Whether a network is declared as read-only
+	 *
+	 * Every network which is defined in a config file that is passed to
+	 * wpa_supplicant using the -I option will be marked as read-only
+	 * using this flag. It has the effect that it won't be written to
+	 * /etc/wpa_supplicant.conf (from -c argument) if, e.g., wpa_gui tells
+	 * the daemon to save all changed configs.
+	 *
+	 * This is necessary because networks from /etc/wpa_supplicant.conf
+	 * have a higher priority and changes from an alternative file would be
+	 * silently overwritten without this.
+	 */
+	bool ro;
 
 	/**
 	 * priority - Priority group
@@ -210,6 +247,11 @@ struct wpa_ssid {
 	char *passphrase;
 
 	/**
+	 * pmk_valid - Whether PMK is valid in case of P2P2 derived from PASN
+	 */
+	bool pmk_valid;
+
+	/**
 	 * sae_password - SAE password
 	 *
 	 * This parameter can be used to set a password for SAE. By default, the
@@ -226,6 +268,10 @@ struct wpa_ssid {
 	 * not included, the default SAE password is used instead.
 	 */
 	char *sae_password_id;
+
+	struct wpabuf_array *alt_sae_password_ids;
+	unsigned int alt_sae_passwords_ids_idx;
+	bool alt_sae_passwords_ids_used;
 
 	struct sae_pt *pt;
 
@@ -561,7 +607,9 @@ struct wpa_ssid {
 
 	int he;
 
-	int max_oper_chwidth;
+	int eht;
+
+	enum oper_chan_width max_oper_chwidth;
 
 	unsigned int vht_center_freq1;
 	unsigned int vht_center_freq2;
@@ -651,6 +699,15 @@ struct wpa_ssid {
 	 * num_p2p_clients - Number of entries in p2p_client_list
 	 */
 	size_t num_p2p_clients;
+
+	/**
+	 * p2p2_client_list - Array of P2P2 Clients in a persistent group (GO)
+	 *
+	 * This is an int_array of P2P2 Clients (ID of device Identity block)
+	 * that have joined the persistent group. This is maintained on the GO
+	 *for persistent group entries (disabled == 2).
+	 */
+	int *p2p2_client_list;
 
 #ifndef P2P_MAX_STORED_CLIENTS
 #define P2P_MAX_STORED_CLIENTS 100
@@ -838,6 +895,14 @@ struct wpa_ssid {
 	struct os_reltime disabled_until;
 
 	/**
+	 * disabled_due_to - BSSID of the disabling failure
+	 *
+	 * This identifies the BSS that failed the connection attempt that
+	 * resulted in the network being temporarily disabled.
+	 */
+	u8 disabled_due_to[ETH_ALEN];
+
+	/**
 	 * parent_cred - Pointer to parent wpa_cred entry
 	 *
 	 * This pointer can be used to delete temporary networks when a wpa_cred
@@ -896,6 +961,18 @@ struct wpa_ssid {
 	u32 macsec_replay_window;
 
 	/**
+	 * macsec_offload - Enable MACsec hardware offload
+	 *
+	 * This setting applies only when MACsec is in use, i.e.,
+	 *  - the key server has decided to enable MACsec
+	 *
+	 * 0 = MACSEC_OFFLOAD_OFF (default)
+	 * 1 = MACSEC_OFFLOAD_PHY
+	 * 2 = MACSEC_OFFLOAD_MAC
+	 */
+	int macsec_offload;
+
+	/**
 	 * macsec_port - MACsec port (in SCI)
 	 *
 	 * Port component of the SCI.
@@ -910,6 +987,21 @@ struct wpa_ssid {
 	 * Range: 0-255 (default: 255)
 	 */
 	int mka_priority;
+
+	/**
+	 * macsec_csindex - Cipher suite index for MACsec
+	 *
+	 * Range: 0-1 (default: 0)
+	 */
+	int macsec_csindex;
+
+	/**
+	 * macsec_icv_indicator - Always include ICV Indicator
+	 * (for compatibility with older MACsec switches)
+	 *
+	 * Range: 0-1 (default: 0)
+	 */
+	int macsec_icv_indicator;
 
 	/**
 	 * mka_ckn - MKA pre-shared CKN
@@ -959,12 +1051,21 @@ struct wpa_ssid {
 	 * 0 = use permanent MAC address
 	 * 1 = use random MAC address for each ESS connection
 	 * 2 = like 1, but maintain OUI (with local admin bit set)
+	 * 3 = use dedicated/pregenerated MAC address (see mac_value)
 	 *
 	 * Internally, special value -1 is used to indicate that the parameter
 	 * was not specified in the configuration (i.e., default behavior is
 	 * followed).
 	 */
-	int mac_addr;
+	enum wpas_mac_addr_style mac_addr;
+
+	/**
+	 * mac_value - Specific MAC address to be used
+	 *
+	 * When mac_addr policy is equal to 3 this is the value of the MAC
+	 * address that should be used.
+	 */
+	u8 mac_value[ETH_ALEN];
 
 	/**
 	 * no_auto_peer - Do not automatically peer with compatible mesh peers
@@ -1058,6 +1159,14 @@ struct wpa_ssid {
 	int dpp_pfs_fallback;
 
 	/**
+	 * dpp_connector_privacy - Network introduction type
+	 * 0: unprotected variant from DPP R1
+	 * 1: privacy protecting (station Connector encrypted) variant from
+	 *    DPP R3
+	 */
+	int dpp_connector_privacy;
+
+	/**
 	 * owe_group - OWE DH Group
 	 *
 	 * 0 = use default (19) first and then try all supported groups one by
@@ -1119,6 +1228,11 @@ struct wpa_ssid {
 	int ft_eap_pmksa_caching;
 
 	/**
+	 * multi_ap_profile - Supported Multi-AP profile
+	 */
+	int multi_ap_profile;
+
+	/**
 	 * beacon_prot - Whether Beacon protection is enabled
 	 *
 	 * This depends on management frame protection (ieee80211w) being
@@ -1176,7 +1290,114 @@ struct wpa_ssid {
 	 * 1 = hash-to-element only
 	 * 2 = both hunting-and-pecking loop and hash-to-element enabled
 	 */
-	int sae_pwe;
+	enum sae_pwe sae_pwe;
+
+	/**
+	 * disable_eht - Disable EHT (IEEE 802.11be) for this network
+	 *
+	 * By default, use it if it is available, but this can be configured
+	 * to 1 to have it disabled.
+	 */
+	int disable_eht;
+
+	/**
+	 * enable_4addr_mode - Set 4addr mode after association
+	 * 0 = Do not attempt to set 4addr mode
+	 * 1 = Try to set 4addr mode after association
+	 *
+	 * Linux requires that an interface is set to 4addr mode before it can
+	 * be added to a bridge. Set this to 1 for networks where you intent
+	 * to use the interface in a bridge.
+	 */
+	int enable_4addr_mode;
+
+	/**
+	 * max_idle - BSS max idle period to request
+	 *
+	 * If nonzero, request the specified number of 1000 TU (i.e., 1.024 s)
+	 * as the maximum idle period for the STA during association.
+	 */
+	int max_idle;
+
+	/**
+	 * ssid_protection - Whether to use SSID protection in 4-way handshake
+	 */
+	bool ssid_protection;
+
+	/**
+	 * rsn_overriding - RSN overriding (per-network override for the global
+	 *	parameter with the same name)
+	 */
+	enum wpas_rsn_overriding rsn_overriding;
+
+	/**
+	 * p2p_mode - P2P R1 only, P2P R2 only, or PCC mode
+	 */
+	enum wpa_p2p_mode p2p_mode;
+
+	/**
+	 * go_dik_id - ID of Device Identity block of group owner
+	 */
+	int go_dik_id;
+
+	/**
+	 * sae_password_id_change - Whether to use changing SAE password IDs
+	 */
+	bool sae_password_id_change;
+
+	/**
+	 * pmksa_privacy - Enable/disable PMKSA caching privacy
+	 * 0 = PMKSA caching privacy enabled
+	 * 1 = PMKSA caching privacy disabled
+	 *
+	 * When enabled, a unique PMKID will be generated for each subsequent
+	 * connection even if the same cached PMKSA is reused.
+	 */
+	int pmksa_privacy;
+
+#ifdef CONFIG_IEEE8021X_AUTH
+	/**
+	 * eap_over_auth_frame - IEEE 802.1X authentication in Authentication
+	 * frames
+	 * 0 = Disabled (i.e., use EAP in EAPOL frames) (default)
+	 * 1 = Enabled (i.e., use EAP in Authentication frames and encrypt
+	 *	associations frames)
+	 */
+	int eap_over_auth_frame;
+#endif /* CONFIG_IEEE8021X_AUTH */
+
+	/**
+	 * drop_unicast_ip_in_l2_multicast - Drop unicast IP packets in L2
+	 *	multicast frames in all networks, not just Passpoint non-DGAF
+	 *	networks
+	 */
+	bool drop_unicast_ip_in_l2_multicast;
+
+	/**
+	 * always_use_proxy_arp - Always rely on proxy ARP even in non-Passpoint
+	 *	networks
+	 * 0 = disabled
+	 * 1 = check AP's extended capabilities
+	 * 2 = always enable
+	 */
+	int always_use_proxy_arp;
+
+#ifdef CONFIG_PASN
+	/**
+	 * pasn_groups - Preference list of enabled groups for PASN
+	 *
+	 * As per IEEE Std 802.11-2024, 12.13.1, both STAs must have at least
+	 * one cyclic group in common from the dot11RSNAConfigDLCGroupTable for
+	 * ephemeral key exchange. For interoperability, a STA shall support
+	 * group 19 (ECC group defined over a 256-bit prime order field), which
+	 * is used as the default if this parameter is not set. Only suitable
+	 * ECC groups (e.g., 19, 20, 21) are accepted.
+	 *
+	 * If this per-network parameter is not configured, the global
+	 * pasn_groups parameter is used. If neither is set, group 19 is used.
+	 */
+	int *pasn_groups;
+#endif /* CONFIG_PASN */
 };
 
 #endif /* CONFIG_SSID_H */

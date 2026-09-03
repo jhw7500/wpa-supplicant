@@ -30,12 +30,15 @@
 #define GAS_QUERY_WAIT_TIME_INITIAL 1000
 #define GAS_QUERY_WAIT_TIME_COMEBACK 150
 
+#define GAS_QUERY_MAX_COMEBACK_DELAY 60000
+
 /**
  * struct gas_query_pending - Pending GAS query
  */
 struct gas_query_pending {
 	struct dl_list list;
 	struct gas_query *gas;
+	struct wpa_radio_work *work;
 	u8 addr[ETH_ALEN];
 	u8 dialog_token;
 	u8 next_frag_id;
@@ -44,6 +47,7 @@ struct gas_query_pending {
 	unsigned int retry:1;
 	unsigned int wildcard_bssid:1;
 	unsigned int maintain_addr:1;
+	unsigned int sent:1;
 	int freq;
 	u16 status_code;
 	struct wpabuf *req;
@@ -65,7 +69,6 @@ struct gas_query {
 	struct wpa_supplicant *wpa_s;
 	struct dl_list pending; /* struct gas_query_pending */
 	struct gas_query_pending *current;
-	struct wpa_radio_work *work;
 	struct os_reltime last_mac_addr_rand;
 	int last_rand_sa_type;
 	u8 rand_addr[ETH_ALEN];
@@ -140,10 +143,15 @@ static void gas_query_free(struct gas_query_pending *query, int del_list)
 	if (del_list)
 		dl_list_del(&query->list);
 
-	if (gas->work && gas->work->ctx == query) {
-		radio_work_done(gas->work);
-		gas->work = NULL;
-	}
+	if (gas->current == query)
+		gas->current = NULL;
+
+	if (query->work)
+		radio_work_done(query->work);
+
+	eloop_cancel_timeout(gas_query_tx_comeback_timeout, gas, query);
+	eloop_cancel_timeout(gas_query_timeout, gas, query);
+	eloop_cancel_timeout(gas_query_rx_comeback_timeout, gas, query);
 
 	wpabuf_free(query->req);
 	wpabuf_free(query->adv_proto);
@@ -160,13 +168,8 @@ static void gas_query_done(struct gas_query *gas,
 		" dialog_token=%u freq=%d status_code=%u result=%s",
 		MAC2STR(query->addr), query->dialog_token, query->freq,
 		query->status_code, gas_result_txt(result));
-	if (gas->current == query)
-		gas->current = NULL;
 	if (query->offchannel_tx_started)
 		offchannel_send_action_done(gas->wpa_s);
-	eloop_cancel_timeout(gas_query_tx_comeback_timeout, gas, query);
-	eloop_cancel_timeout(gas_query_timeout, gas, query);
-	eloop_cancel_timeout(gas_query_rx_comeback_timeout, gas, query);
 	dl_list_del(&query->list);
 	query->cb(query->ctx, query->addr, query->dialog_token, result,
 		  query->adv_proto, query->resp, query->status_code);
@@ -196,13 +199,30 @@ void gas_query_deinit(struct gas_query *gas)
 static struct gas_query_pending *
 gas_query_get_pending(struct gas_query *gas, const u8 *addr, u8 dialog_token)
 {
-	struct gas_query_pending *q;
+	struct gas_query_pending *q, *alt = NULL;
+	struct wpa_supplicant *wpa_s = gas->wpa_s;
+
+	/* Prefer a pending entry that matches with the current radio_work to
+	 * avoid issues when freeing the pending entry in gas_query_free(). That
+	 * case should not really happen, but due to the special case for
+	 * AP MLD MAC address here, a same dialog token value might end up
+	 * being pending and matching the same query. */
 	dl_list_for_each(q, &gas->pending, struct gas_query_pending, list) {
-		if (os_memcmp(q->addr, addr, ETH_ALEN) == 0 &&
-		    q->dialog_token == dialog_token)
-			return q;
+		if (!q->sent)
+			continue;
+		if ((ether_addr_equal(q->addr, addr) &&
+		     q->dialog_token == dialog_token) ||
+		    (wpa_s->valid_links &&
+		     ether_addr_equal(wpa_s->ap_mld_addr, addr) &&
+		     wpas_ap_link_address(wpa_s, q->addr))) {
+			if (q == gas->current)
+				return q;
+			if (!alt)
+				alt = q;
+		}
 	}
-	return NULL;
+
+	return alt;
 }
 
 
@@ -241,7 +261,7 @@ static void gas_query_tx_status(struct wpa_supplicant *wpa_s,
 	wpa_printf(MSG_DEBUG, "GAS: TX status: freq=%u dst=" MACSTR
 		   " result=%d query=%p dialog_token=%u dur=%d ms",
 		   freq, MAC2STR(dst), result, query, query->dialog_token, dur);
-	if (os_memcmp(dst, query->addr, ETH_ALEN) != 0) {
+	if (!ether_addr_equal(dst, query->addr)) {
 		wpa_printf(MSG_DEBUG, "GAS: TX status for unexpected destination");
 		return;
 	}
@@ -298,7 +318,7 @@ static int gas_query_tx(struct gas_query *gas, struct gas_query_pending *query,
 	    (!gas->wpa_s->conf->gas_address3 ||
 	     (gas->wpa_s->current_ssid &&
 	      gas->wpa_s->wpa_state >= WPA_ASSOCIATED &&
-	      os_memcmp(query->addr, gas->wpa_s->bssid, ETH_ALEN) == 0)))
+	      ether_addr_equal(query->addr, gas->wpa_s->bssid))))
 		bssid = query->addr;
 	else
 		bssid = wildcard_bssid;
@@ -308,8 +328,10 @@ static int gas_query_tx(struct gas_query *gas, struct gas_query_pending *query,
 				     wpabuf_len(req), wait_time,
 				     gas_query_tx_status, 0);
 
-	if (res == 0)
+	if (res == 0) {
+		query->sent = 1;
 		query->offchannel_tx_started = 1;
+	}
 	return res;
 }
 
@@ -402,14 +424,14 @@ static void gas_query_tx_comeback_req_delay(struct gas_query *gas,
 
 static void gas_query_rx_initial(struct gas_query *gas,
 				 struct gas_query_pending *query,
-				 const u8 *adv_proto, const u8 *resp,
-				 size_t len, u16 comeback_delay)
+				 const u8 *adv_proto, size_t adv_proto_len,
+				 const u8 *resp, size_t len, u16 comeback_delay)
 {
 	wpa_printf(MSG_DEBUG, "GAS: Received initial response from "
 		   MACSTR " (dialog_token=%u comeback_delay=%u)",
 		   MAC2STR(query->addr), query->dialog_token, comeback_delay);
 
-	query->adv_proto = wpabuf_alloc_copy(adv_proto, 2 + adv_proto[1]);
+	query->adv_proto = wpabuf_alloc_copy(adv_proto, adv_proto_len);
 	if (query->adv_proto == NULL) {
 		gas_query_done(gas, query, GAS_QUERY_INTERNAL_ERROR);
 		return;
@@ -434,9 +456,9 @@ static void gas_query_rx_initial(struct gas_query *gas,
 
 static void gas_query_rx_comeback(struct gas_query *gas,
 				  struct gas_query_pending *query,
-				  const u8 *adv_proto, const u8 *resp,
-				  size_t len, u8 frag_id, u8 more_frags,
-				  u16 comeback_delay)
+				  const u8 *adv_proto, size_t adv_proto_len,
+				  const u8 *resp, size_t len, u8 frag_id,
+				  u8 more_frags, u16 comeback_delay)
 {
 	wpa_printf(MSG_DEBUG, "GAS: Received comeback response from "
 		   MACSTR " (dialog_token=%u frag_id=%u more_frags=%u "
@@ -445,7 +467,7 @@ static void gas_query_rx_comeback(struct gas_query *gas,
 		   more_frags, comeback_delay);
 	eloop_cancel_timeout(gas_query_rx_comeback_timeout, gas, query);
 
-	if ((size_t) 2 + adv_proto[1] != wpabuf_len(query->adv_proto) ||
+	if (adv_proto_len != wpabuf_len(query->adv_proto) ||
 	    os_memcmp(adv_proto, wpabuf_head(query->adv_proto),
 		      wpabuf_len(query->adv_proto)) != 0) {
 		wpa_printf(MSG_DEBUG, "GAS: Advertisement Protocol changed "
@@ -514,6 +536,7 @@ int gas_query_rx(struct gas_query *gas, const u8 *da, const u8 *sa,
 	u8 action, dialog_token, frag_id = 0, more_frags = 0;
 	u16 comeback_delay, resp_len;
 	const u8 *pos, *adv_proto;
+	size_t adv_proto_len;
 	int prot, pmf;
 	unsigned int left;
 
@@ -536,6 +559,14 @@ int gas_query_rx(struct gas_query *gas, const u8 *da, const u8 *sa,
 	}
 	if (!prot && pmf) {
 		wpa_printf(MSG_DEBUG, "GAS: Drop unexpected unprotected GAS frame when PMF is enabled");
+		return 0;
+	}
+
+	if (pmf && is_multicast_ether_addr(da)) {
+		wpa_printf(MSG_DEBUG,
+			   "GAS: Ignore group-addressed GAS frame (A1=" MACSTR
+			   " A2=" MACSTR ") when PMF is enabled",
+			   MAC2STR(da), MAC2STR(sa));
 		return 0;
 	}
 
@@ -589,25 +620,31 @@ int gas_query_rx(struct gas_query *gas, const u8 *da, const u8 *sa,
 	if (pos + 2 > data + len)
 		return 0;
 	comeback_delay = WPA_GET_LE16(pos);
+	if (comeback_delay > GAS_QUERY_MAX_COMEBACK_DELAY)
+		comeback_delay = GAS_QUERY_MAX_COMEBACK_DELAY;
 	pos += 2;
 
 	/* Advertisement Protocol element */
-	if (pos + 2 > data + len || pos + 2 + pos[1] > data + len) {
+	adv_proto = pos;
+	left = data + len - adv_proto;
+	if (left < 2 || adv_proto[1] > left - 2) {
 		wpa_printf(MSG_DEBUG, "GAS: No room for Advertisement "
 			   "Protocol element in the response from " MACSTR,
 			   MAC2STR(sa));
 		return 0;
 	}
 
-	if (*pos != WLAN_EID_ADV_PROTO) {
+	if (*adv_proto != WLAN_EID_ADV_PROTO) {
 		wpa_printf(MSG_DEBUG, "GAS: Unexpected Advertisement "
 			   "Protocol element ID %u in response from " MACSTR,
-			   *pos, MAC2STR(sa));
+			   *adv_proto, MAC2STR(sa));
 		return 0;
 	}
+	adv_proto_len = 2 + adv_proto[1];
+	if (adv_proto_len > (size_t) (data + len - pos))
+		return 0; /* unreachable due to an earlier check */
 
-	adv_proto = pos;
-	pos += 2 + pos[1];
+	pos += adv_proto_len;
 
 	/* Query Response Length */
 	if (pos + 2 > data + len) {
@@ -631,11 +668,12 @@ int gas_query_rx(struct gas_query *gas, const u8 *da, const u8 *sa,
 	}
 
 	if (action == WLAN_PA_GAS_COMEBACK_RESP)
-		gas_query_rx_comeback(gas, query, adv_proto, pos, resp_len,
-				      frag_id, more_frags, comeback_delay);
+		gas_query_rx_comeback(gas, query, adv_proto, adv_proto_len,
+				      pos, resp_len, frag_id, more_frags,
+				      comeback_delay);
 	else
-		gas_query_rx_initial(gas, query, adv_proto, pos, resp_len,
-				     comeback_delay);
+		gas_query_rx_initial(gas, query, adv_proto, adv_proto_len,
+				     pos, resp_len, comeback_delay);
 
 	return 0;
 }
@@ -658,7 +696,7 @@ static int gas_query_dialog_token_available(struct gas_query *gas,
 {
 	struct gas_query_pending *q;
 	dl_list_for_each(q, &gas->pending, struct gas_query_pending, list) {
-		if (os_memcmp(dst, q->addr, ETH_ALEN) == 0 &&
+		if ((!dst || ether_addr_equal(dst, q->addr)) &&
 		    dialog_token == q->dialog_token)
 			return 0;
 	}
@@ -675,7 +713,6 @@ static void gas_query_start_cb(struct wpa_radio_work *work, int deinit)
 
 	if (deinit) {
 		if (work->started) {
-			gas->work = NULL;
 			gas_query_done(gas, query, GAS_QUERY_DELETED_AT_DEINIT);
 			return;
 		}
@@ -689,13 +726,11 @@ static void gas_query_start_cb(struct wpa_radio_work *work, int deinit)
 			wpa_msg(wpa_s, MSG_INFO,
 				"Failed to assign random MAC address for GAS");
 			gas_query_free(query, 1);
-			radio_work_done(work);
 			return;
 		}
 		os_memcpy(query->sa, wpa_s->own_addr, ETH_ALEN);
 	}
 
-	gas->work = work;
 	gas_query_tx_initial_req(gas, query);
 }
 
@@ -729,6 +764,18 @@ static int gas_query_new_dialog_token(struct gas_query *gas, const u8 *dst)
 	 * token by checking random values. Use a limit on the number of
 	 * iterations to handle the unexpected case of large number of pending
 	 * queries cleanly. */
+	for (i = 0; i < 256; i++) {
+		/* Get a random number and check if it is not used in any
+		 * pending entry for any peer. */
+		if (os_get_random(&dialog_token, sizeof(dialog_token)) < 0)
+			break;
+		if (gas_query_dialog_token_available(gas, NULL, dialog_token))
+			return dialog_token;
+	}
+
+	/* In the highly unlikely case there were so many pending queries that
+	 * no available unused dialog token was available. Try to find one that
+	 * is unique for this specific peer. */
 	for (i = 0; i < 256; i++) {
 		/* Get a random number and check if the slot is available */
 		if (os_get_random(&dialog_token, sizeof(dialog_token)) < 0)
@@ -862,8 +909,9 @@ int gas_query_req(struct gas_query *gas, const u8 *dst, int freq,
 		" dialog_token=%u freq=%d",
 		MAC2STR(query->addr), query->dialog_token, query->freq);
 
-	if (radio_add_work(gas->wpa_s, freq, "gas-query", 0, gas_query_start_cb,
-			   query) < 0) {
+	query->work = radio_add_work(gas->wpa_s, freq, "gas-query", 0,
+				     gas_query_start_cb, query);
+	if (!query->work) {
 		query->req = NULL; /* caller will free this in error case */
 		gas_query_free(query, 1);
 		return -1;
@@ -879,15 +927,6 @@ int gas_query_stop(struct gas_query *gas, u8 dialog_token)
 
 	dl_list_for_each(query, &gas->pending, struct gas_query_pending, list) {
 		if (query->dialog_token == dialog_token) {
-			if (!gas->work) {
-				/* The pending radio work has not yet been
-				 * started, but the pending entry has a
-				 * reference to the soon to be freed query.
-				 * Need to remove that radio work now to avoid
-				 * leaving behind a reference to freed memory.
-				 */
-				radio_remove_pending_work(gas->wpa_s, query);
-			}
 			gas_query_done(gas, query, GAS_QUERY_STOPPED);
 			return 0;
 		}

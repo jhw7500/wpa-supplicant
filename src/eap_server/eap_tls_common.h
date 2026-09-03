@@ -55,6 +55,8 @@ struct eap_ssl_data {
 	 * tls_v13 - Whether TLS v1.3 or newer is used
 	 */
 	int tls_v13;
+
+	bool skip_prot_success; /* testing behavior only for TLS v1.3 */
 };
 
 
@@ -70,7 +72,6 @@ struct eap_ssl_data {
 
 /* stub type used as a flag for UNAUTH-TLS */
 #define EAP_UNAUTH_TLS_TYPE 255
-#define EAP_WFA_UNAUTH_TLS_TYPE 254
 
 
 struct wpabuf * eap_tls_msg_alloc(enum eap_type type, size_t payload_len,

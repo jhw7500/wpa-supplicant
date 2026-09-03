@@ -445,7 +445,8 @@ static struct wpabuf * eap_ttls_build_phase2_mschapv2(
 			sizeof(data->mschapv2_auth_response));
 	} else {
 		pos = eap_ttls_avp_hdr(pos, RADIUS_ATTR_MS_CHAP_ERROR,
-				       RADIUS_VENDOR_ID_MICROSOFT, 1, 6);
+				       RADIUS_VENDOR_ID_MICROSOFT, 1, 7);
+		*pos++ = data->mschapv2_ident;
 		os_memcpy(pos, "Failed", 6);
 		pos += 6;
 		AVP_PAD(req, pos);
@@ -559,6 +560,10 @@ static void eap_ttls_process_phase2_chap(struct eap_sm *sm,
 					 const u8 *password,
 					 size_t password_len)
 {
+#ifdef CONFIG_FIPS
+	wpa_printf(MSG_ERROR, "EAP-TTLS: CHAP not supported in FIPS build");
+	eap_ttls_state(data, FAILURE);
+#else /* CONFIG_FIPS */
 	u8 *chal, hash[CHAP_MD5_LEN];
 
 	if (challenge == NULL || password == NULL ||
@@ -612,6 +617,7 @@ static void eap_ttls_process_phase2_chap(struct eap_sm *sm,
 		wpa_printf(MSG_DEBUG, "EAP-TTLS/CHAP: Invalid user password");
 		eap_ttls_state(data, FAILURE);
 	}
+#endif /* CONFIG_FIPS */
 }
 
 

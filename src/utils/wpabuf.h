@@ -127,6 +127,12 @@ static inline void wpabuf_put_le16(struct wpabuf *buf, u16 data)
 	WPA_PUT_LE16(pos, data);
 }
 
+static inline void wpabuf_put_le24(struct wpabuf *buf, u32 data)
+{
+	u8 *pos = (u8 *) wpabuf_put(buf, 3);
+	WPA_PUT_LE24(pos, data);
+}
+
 static inline void wpabuf_put_le32(struct wpabuf *buf, u32 data)
 {
 	u8 *pos = (u8 *) wpabuf_put(buf, 4);
@@ -187,5 +193,16 @@ static inline void wpabuf_put_str(struct wpabuf *dst, const char *str)
 {
 	wpabuf_put_data(dst, str, os_strlen(str));
 }
+
+
+struct wpabuf_array {
+	unsigned int num;
+	struct wpabuf **buf;
+};
+
+struct wpabuf_array * wpabuf_array_alloc(void);
+void wpabuf_array_free(struct wpabuf_array *wa);
+int wpabuf_array_add(struct wpabuf_array *wa, struct wpabuf *buf);
+void wpabuf_array_remove(struct wpabuf_array *wa, unsigned int idx);
 
 #endif /* WPABUF_H */
