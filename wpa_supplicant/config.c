@@ -5017,6 +5017,121 @@ static void wpa_config_read_json_init_scan(struct wpa_config *config,
 
 #ifdef CONFIG_JSON
 
+/* jhw: Step over a JSON string. pos points at the opening quote; returns the
+ * character after the closing one, or NULL if it never closes. */
+static const char * wpa_config_json_skip_str(const char *pos, const char *end)
+{
+	pos++;
+	while (pos < end) {
+		if (*pos == '\\') {
+			pos += 2;
+			continue;
+		}
+		if (*pos == '"')
+			return pos + 1;
+		pos++;
+	}
+
+	return NULL;
+}
+
+
+/* jhw: Span the object starting at pos (pointing at '{') through its matching
+ * '}'. Strings are stepped over, so a brace inside one cannot shift the
+ * depth. */
+static int wpa_config_json_span_obj(const char *pos, const char *end,
+				    const char **obj, size_t *obj_len)
+{
+	const char *start = pos;
+	int depth = 0;
+
+	while (pos < end) {
+		if (*pos == '"') {
+			pos = wpa_config_json_skip_str(pos, end);
+			if (!pos)
+				return 0;
+			continue;
+		}
+
+		if (*pos == '{') {
+			depth++;
+		} else if (*pos == '}') {
+			depth--;
+			if (depth == 0) {
+				*obj = start;
+				*obj_len = (size_t) (pos + 1 - start);
+				return 1;
+			}
+		}
+		pos++;
+	}
+
+	return 0;
+}
+
+
+/* jhw: Find the top-level member named ifname and hand back just its text.
+ *
+ * The deployed file is past what json_parse() will accept in one piece - it is
+ * a whole-device config, and the token budget in src/utils/json.c is sized for
+ * DPP messages - while the interface section on its own fits with room to
+ * spare. So the braces are matched here and only that section reaches the
+ * parser. Nothing here reads a value; that stays the parser's job.
+ *
+ * Looking only at depth 1 is also what makes a same-named object nested under
+ * some other section unable to shadow the real one. */
+static int wpa_config_json_top_object(const char *data, size_t len,
+				      const char *name,
+				      const char **obj, size_t *obj_len)
+{
+	const char *pos = data, *end = data + len;
+	size_t name_len = os_strlen(name);
+	int depth = 0;
+
+	while (pos < end) {
+		if (*pos == '"') {
+			const char *after = wpa_config_json_skip_str(pos, end);
+			const char *p;
+
+			if (!after)
+				return 0;
+			if (depth != 1 ||
+			    (size_t) (after - pos) != name_len + 2 ||
+			    os_memcmp(pos + 1, name, name_len) != 0) {
+				pos = after;
+				continue;
+			}
+
+			/* Name matches at the top level - take it only if it
+			 * actually keys an object. */
+			for (p = after; p < end && (*p == ' ' || *p == '\t' ||
+						    *p == '\r' || *p == '\n');
+			     p++)
+				;
+			if (p < end && *p == ':') {
+				for (p++; p < end && (*p == ' ' || *p == '\t' ||
+						      *p == '\r' ||
+						      *p == '\n'); p++)
+					;
+				if (p < end && *p == '{')
+					return wpa_config_json_span_obj(
+						p, end, obj, obj_len);
+			}
+			pos = after;
+			continue;
+		}
+
+		if (*pos == '{' || *pos == '[')
+			depth++;
+		else if (*pos == '}' || *pos == ']')
+			depth--;
+		pos++;
+	}
+
+	return 0;
+}
+
+
 /* jhw: Locate the per-interface object in the parsed init file.
  *
  * The file carries other objects keyed by interface name - a "mac" map, for
@@ -5104,19 +5219,31 @@ static int wpa_config_read_json_init_strict(struct wpa_config *config,
 					    const char *data, size_t len)
 {
 	struct json_token *root, *iface, *name_match = NULL, *val;
+	const char *obj;
+	size_t obj_len;
 	int num;
 
-	root = json_parse(data, len);
-	if (!root) {
-		wpa_printf(MSG_WARNING,
-			   "JSON: %s is not valid JSON - falling back to the line scanner",
-			   WIFI_INIT_CONF_JSON);
-		return -1;
+	if (wpa_config_json_top_object(data, len, ifname, &obj, &obj_len)) {
+		root = json_parse(obj, obj_len);
+		if (!root) {
+			wpa_printf(MSG_WARNING,
+				   "JSON: %s section \"%s\" does not parse - falling back to the line scanner",
+				   WIFI_INIT_CONF_JSON, ifname);
+			return -1;
+		}
+		iface = root;
+	} else {
+		root = json_parse(data, len);
+		if (!root) {
+			wpa_printf(MSG_WARNING,
+				   "JSON: %s has no top-level \"%s\" section and does not parse whole - falling back to the line scanner",
+				   WIFI_INIT_CONF_JSON, ifname);
+			return -1;
+		}
+		iface = wpa_config_json_find_iface(root, ifname, &name_match);
+		if (!iface)
+			iface = name_match;
 	}
-
-	iface = wpa_config_json_find_iface(root, ifname, &name_match);
-	if (!iface)
-		iface = name_match;
 
 	if (!iface) {
 		wpa_printf(MSG_INFO,
