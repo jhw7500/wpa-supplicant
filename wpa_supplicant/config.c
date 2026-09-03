@@ -11,8 +11,8 @@
 #include "common.h"
 #include "utils/uuid.h"
 #include "utils/ip_addr.h"
+#include <limits.h>	/* jhw: strtol bounds in the connect_threshold paths */
 #ifdef CONFIG_JSON
-#include <limits.h>	/* jhw: strtol bounds below */
 #include "utils/json.h"	/* jhw */
 #endif /* CONFIG_JSON */
 #include "common/ieee802_1x_defs.h"
@@ -4911,6 +4911,30 @@ static int wpa_config_apply_connect_threshold(struct wpa_config *config,
 }
 
 
+/* jhw: Read an integer out of the raw tail of a config line. The value is
+ * followed by a comma, a brace or a quote, so unlike the JSON path this stops
+ * at the first character strtol() will not take - but it still refuses text
+ * that holds no number at all. atoi() would turn "off" into 0, and 0 is inside
+ * the accepted range, so the filter would switch off while the log read like a
+ * deliberate setting. */
+static int wpa_config_scan_int(const char *pos, int *out)
+{
+	char *endp;
+	long val;
+
+	while (*pos == ' ' || *pos == '\t' || *pos == '"')
+		pos++;
+
+	errno = 0;
+	val = strtol(pos, &endp, 10);
+	if (errno || endp == pos || val < INT_MIN || val > INT_MAX)
+		return 0;
+
+	*out = (int) val;
+	return 1;
+}
+
+
 /* jhw: Legacy line scanner, kept only as a fallback for files the strict
  * parser rejects - comments, trailing commas, or a file past the parser's
  * token and depth limits. It is not a JSON parser: it matches per line, so a
@@ -4929,6 +4953,7 @@ static void wpa_config_read_json_init_scan(struct wpa_config *config,
 	int in_iface_section = 0;
 	int brace_depth = 0;
 	int applied = 0;
+	int val;
 
 	f = fopen(WIFI_INIT_CONF_JSON, "r");
 	if (!f) {
@@ -4962,9 +4987,9 @@ static void wpa_config_read_json_init_scan(struct wpa_config *config,
 		pos = os_strstr(buf, "\"connect_threshold\"");
 		if (pos) {
 			pos = os_strchr(pos, ':');
-			if (pos) {
+			if (pos && wpa_config_scan_int(pos + 1, &val)) {
 				applied = wpa_config_apply_connect_threshold(
-					config, ifname, atoi(pos + 1));
+					config, ifname, val);
 			}
 			break;
 		}
