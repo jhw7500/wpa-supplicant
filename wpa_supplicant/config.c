@@ -5143,7 +5143,13 @@ static int wpa_config_json_top_object(const char *data, size_t len,
  * one - so matching on the name alone can land on a decoy that holds no
  * settings. Prefer an object that actually carries connect_threshold, and
  * remember the first bare name match so that a real section missing the key is
- * still reported as such rather than as a missing section. */
+ * still reported as such rather than as a missing section.
+ *
+ * Note what this does not do: it searches at any depth, so the depth-1 rule
+ * that keeps a nested decoy out on the fast path does not hold here. Reaching
+ * a nested section is the point of this path, and down there a legitimate
+ * section and a decoy look alike - so the caller says in the log that the
+ * value came from a nested object. */
 static struct json_token *
 wpa_config_json_find_iface(struct json_token *node, const char *ifname,
 			   struct json_token **name_match)
@@ -5216,9 +5222,18 @@ static int wpa_config_json_int(const struct json_token *tok, int *out)
 }
 
 
-/* jhw: Read connect_threshold with the RFC7159 parser. Returns 0 when the file
- * was valid JSON - whether or not a value was found in it - and -1 when it was
- * not, so that the caller can fall back to the line scanner. */
+/* jhw: Read connect_threshold with the RFC7159 parser. Returns 0 when a tree
+ * was parsed - whether or not a value was found in it - and -1 when nothing
+ * could be parsed, so that the caller can fall back to the line scanner.
+ *
+ * The interface section is looked for at the top level first and only that
+ * section is handed to the parser: the deployed file is past the parser's
+ * token budget as a whole, and its section sits at the top level with a
+ * same-named decoy nested elsewhere, so this is both the case that has to work
+ * and the one that structurally cannot pick the decoy. A file whose section is
+ * nested instead still works through the whole-file parse below - but that
+ * search is depth-blind, so it carries a warning rather than the same
+ * guarantee. */
 static int wpa_config_read_json_init_strict(struct wpa_config *config,
 					    const char *ifname,
 					    const char *data, size_t len)
@@ -5248,6 +5263,10 @@ static int wpa_config_read_json_init_strict(struct wpa_config *config,
 		iface = wpa_config_json_find_iface(root, ifname, &name_match);
 		if (!iface)
 			iface = name_match;
+		if (iface)
+			wpa_printf(MSG_WARNING,
+				   "JSON: %s has no top-level \"%s\" object - using a nested one, which any same-named object in the file could also match",
+				   WIFI_INIT_CONF_JSON, ifname);
 	}
 
 	if (!iface) {
