@@ -3809,7 +3809,7 @@ static int wpa_supplicant_ctrl_iface_get_network(
 		return -1;
 	}
 
-	value = wpa_config_get_no_key(ssid, name);
+	value = wpa_config_get(ssid, name);
 	if (value == NULL) {
 		wpa_printf(MSG_EXCESSIVE, "CTRL_IFACE: Failed to get network "
 			   "variable '%s'", name);
@@ -3818,11 +3818,11 @@ static int wpa_supplicant_ctrl_iface_get_network(
 
 	res = os_strlcpy(buf, value, buflen);
 	if (res >= buflen) {
-		os_free(value);
+		str_clear_free(value);
 		return -1;
 	}
 
-	os_free(value);
+	str_clear_free(value);
 
 	return res;
 }

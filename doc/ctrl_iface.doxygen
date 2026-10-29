@@ -374,6 +374,11 @@ configuration file. See example wpa_supplicant.conf for more details.
 Get network variables. Network id can be received from the
 \c LIST_NETWORKS command output.
 
+Configured values, including keys and passwords, are returned in configuration
+file format. For example, \c psk returns a quoted passphrase or a raw PSK as
+64 hexadecimal digits. Anyone with access to the control interface can read
+these values.
+
 
 \subsection ctrl_iface_SAVE_CONFIG SAVE_CONFIG
 

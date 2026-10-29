@@ -119,11 +119,11 @@ def test_wpas_ctrl_network(dev):
     if dev[0].get_network(id, "password"):
         raise Exception("Unexpected response for 'password'")
     dev[0].set_network_quoted(id, "password", "foo")
-    if dev[0].get_network(id, "password") != '*':
-        raise Exception("Unexpected response for 'password' (expected *)")
+    if dev[0].get_network(id, "password") != '"foo"':
+        raise Exception("Unexpected response for 'password'")
     dev[0].set_network(id, "password", "hash:12345678901234567890123456789012")
-    if dev[0].get_network(id, "password") != '*':
-        raise Exception("Unexpected response for 'password' (expected *)")
+    if dev[0].get_network(id, "password") != "hash:12345678901234567890123456789012":
+        raise Exception("Unexpected response for hashed 'password'")
     dev[0].set_network(id, "password", "NULL")
     if dev[0].get_network(id, "password"):
         raise Exception("Unexpected response for 'password'")
@@ -131,6 +131,13 @@ def test_wpas_ctrl_network(dev):
         raise Exception("Unexpected success for invalid password hash")
     if "FAIL" not in dev[0].request("SET_NETWORK " + str(id) + " password hash:123456789012345678x0123456789012"):
         raise Exception("Unexpected success for invalid password hash")
+
+    for field, value in (("sae_password", "saesecret"),
+                         ("private_key_passwd", "keysecret"),
+                         ("pin", "1234")):
+        dev[0].set_network_quoted(id, field, value)
+        if dev[0].get_network(id, field) != '"' + value + '"':
+            raise Exception("Unexpected response for '" + field + "'")
 
     dev[0].set_network(id, "identity", "414243")
     if dev[0].get_network(id, "identity") != '"ABC"':
@@ -150,7 +157,7 @@ def test_wpas_ctrl_network(dev):
         for i in range(0, 4):
             if "FAIL" in dev[0].request("SET_NETWORK " + str(id) + ' wep_key' + str(i) + ' aabbccddee'):
                 raise Exception("Unexpected wep_key set failure")
-            if dev[0].get_network(id, "wep_key" + str(i)) != '*':
+            if dev[0].get_network(id, "wep_key" + str(i)) != 'aabbccddee':
                 raise Exception("Unexpected wep_key get failure")
 
     if "FAIL" in dev[0].request("SET_NETWORK " + str(id) + ' psk_list P2P-00:11:22:33:44:55-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'):
@@ -193,9 +200,14 @@ def test_wpas_ctrl_network(dev):
     if "FAIL" not in dev[0].request('SET_NETWORK ' + str(id) + ' psk "1234567890123456789012345678901234567890123456789012345678901234"'):
         raise Exception("Too long PSK accepted")
     dev[0].set_network_quoted(id, "psk", "123456768")
-    dev[0].set_network_quoted(id, "psk", "123456789012345678901234567890123456789012345678901234567890123")
-    if dev[0].get_network(id, "psk") != '*':
-        raise Exception("Unexpected psk read result")
+    passphrase = "123456789012345678901234567890123456789012345678901234567890123"
+    dev[0].set_network_quoted(id, "psk", passphrase)
+    if dev[0].get_network(id, "psk") != '"' + passphrase + '"':
+        raise Exception("Unexpected passphrase read result")
+    psk = "0123456789abcdef" * 4
+    dev[0].set_network(id, "psk", psk)
+    if dev[0].get_network(id, "psk") != psk:
+        raise Exception("Unexpected raw PSK read result")
 
     if "FAIL" not in dev[0].request('SET_NETWORK ' + str(id) + ' eap UNKNOWN'):
         raise Exception("Unknown EAP method accepted")
