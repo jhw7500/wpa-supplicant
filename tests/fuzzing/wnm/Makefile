@@ -56,5 +56,27 @@ include ../../../src/objs.mk
 wnm: $(OBJS) $(LIBS)
 	$(LDO) $(LDFLAGS) -o $@ $^ $(LIBS) $(ELIBS)
 
+# Exercise the production WNM handlers without a radio or driver interface.
+WNM_TEST_SOURCE ?= $(abspath $(WPAS_SRC)/wnm_sta.c)
+REGRESSION_BIN ?= wnm-regression
+REGRESSION_OBJ = $(BUILDDIR)/$(PROJ)/regression.o
+REGRESSION_OBJS = $(filter-out %/fuzzer-common.o %/wnm.o %/wpa_supplicant/wnm_sta.o,$(OBJS)) $(REGRESSION_OBJ)
+REGRESSION_WRAPS = wpa_supplicant_select_bss wpa_scan_res_match \
+	wpa_supplicant_need_to_roam_within_ess wpa_sm_pmf_enabled \
+	wpa_wnmsleep_install_key
+comma := ,
+
+$(REGRESSION_OBJ): CFLAGS := -I$(WPAS_SRC) $(CFLAGS) -DWNM_REGRESSION_SOURCE='"$(WNM_TEST_SOURCE)"'
+$(REGRESSION_OBJ): regression.c $(WNM_TEST_SOURCE) | _make_dirs
+	$(CC) $(CFLAGS) -c -o $@ $<
+-include $(REGRESSION_OBJ:.o=.d)
+
+$(REGRESSION_BIN): $(REGRESSION_OBJS) $(LIBS)
+	$(LDO) $(LDFLAGS) $(addprefix -Wl$(comma)--wrap=,$(REGRESSION_WRAPS)) -o $@ $^ $(LIBS) $(ELIBS)
+
+.PHONY: check-regression
+check-regression: $(REGRESSION_BIN)
+	$(abspath $(REGRESSION_BIN))
+
 clean: common-clean
-	rm -f wnm *~ *.o *.d ../*~ ../*.o ../*.d
+	rm -f wnm wnm-regression *~ *.o *.d ../*~ ../*.o ../*.d
